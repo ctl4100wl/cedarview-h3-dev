@@ -98,8 +98,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     auto *heading = new QLabel(tr("CAMERAS"), m_sidebar);
     heading->setObjectName(QStringLiteral("sidebarHeading"));
-    heading->setStyleSheet(
-        QStringLiteral("font-size: 11px; font-weight: 700; color: #4b5563;"));
 
     m_cameraList = new CameraListWidget(m_sidebar);
     m_cameraList->setObjectName(QStringLiteral("cameraList"));
@@ -174,13 +172,16 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_fullscreenButton, &QPushButton::clicked,
             this, &MainWindow::toggleFullscreen);
 
+    m_themeButton = new QPushButton(m_sidebar);
+    connect(m_themeButton, &QPushButton::clicked,
+            this, &MainWindow::toggleTheme);
+
     auto *tip = new QLabel(
         tr("Drag a camera snapshot onto any tile. Press F11 for fullscreen "
            "and Esc to exit."),
         m_sidebar);
+    tip->setObjectName(QStringLiteral("sidebarTip"));
     tip->setWordWrap(true);
-    tip->setStyleSheet(QStringLiteral(
-        "background: transparent; color: #6b7280; font-size: 11px;"));
 
     auto *sidebarLayout = new QVBoxLayout(m_sidebar);
     sidebarLayout->addWidget(heading);
@@ -191,6 +192,7 @@ MainWindow::MainWindow(QWidget *parent)
     sidebarLayout->addWidget(gridLabel);
     sidebarLayout->addWidget(m_gridPreset);
     sidebarLayout->addWidget(m_fullscreenButton);
+    sidebarLayout->addWidget(m_themeButton);
     sidebarLayout->addWidget(tip);
 
     m_grid = new GridView(this);
@@ -198,7 +200,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_grid->setCameras(m_state.cameras);
     m_grid->setAssignments(m_state.assignments);
     connect(m_grid, &GridView::assignmentsChanged,
-            this, &MainWindow::saveState);
+            this, [this] {
+                saveState();
+                updateAssignmentIndicators();
+            });
     connect(m_grid, &GridView::playbackError,
             this, &MainWindow::showPlaybackError);
 
@@ -353,6 +358,16 @@ void MainWindow::toggleFullscreen()
     updateFullscreenUi();
 }
 
+void MainWindow::toggleTheme()
+{
+    m_state.theme = m_state.theme == QStringLiteral("dark")
+        ? QStringLiteral("light")
+        : QStringLiteral("dark");
+    applyStyle();
+    updateAssignmentIndicators();
+    saveState();
+}
+
 void MainWindow::showPlaybackError(const QString &camera,
                                    const QString &message)
 {
@@ -367,9 +382,10 @@ void MainWindow::refreshCameraList()
             QIcon(thumbnailPixmap(snapshotPath(camera.id))),
             camera.name, m_cameraList);
         item->setData(Qt::UserRole, camera.id);
-        item->setForeground(QBrush(Qt::black));
+        item->setData(Qt::UserRole + 1, camera.name);
         item->setSizeHint(QSize(0, 70));
     }
+    updateAssignmentIndicators();
 }
 
 void MainWindow::queueSnapshot(const Camera &camera)
@@ -476,6 +492,41 @@ void MainWindow::updateCameraThumbnail(const QString &cameraId,
     }
 }
 
+void MainWindow::updateAssignmentIndicators()
+{
+    if (!m_cameraList || !m_grid) {
+        return;
+    }
+
+    const QStringList currentAssignments = m_grid->assignments();
+    const QColor textColor(
+        m_state.theme == QStringLiteral("dark")
+            ? QStringLiteral("#f3f4f6")
+            : QStringLiteral("#111827"));
+    for (int row = 0; row < m_cameraList->count(); ++row) {
+        QListWidgetItem *item = m_cameraList->item(row);
+        const QString cameraId = item->data(Qt::UserRole).toString();
+        const QString cameraName = item->data(Qt::UserRole + 1).toString();
+        QStringList positions;
+        for (int tileIndex = 0; tileIndex < currentAssignments.size();
+             ++tileIndex) {
+            if (currentAssignments.at(tileIndex) == cameraId) {
+                positions.append(QString::number(tileIndex + 1));
+            }
+        }
+        item->setText(positions.isEmpty()
+                          ? cameraName
+                          : tr("%1  •  Tile %2")
+                                .arg(cameraName, positions.join(
+                                    QStringLiteral(", "))));
+        item->setToolTip(positions.isEmpty()
+                             ? tr("Not currently shown")
+                             : tr("Currently shown in tile %1")
+                                   .arg(positions.join(QStringLiteral(", "))));
+        item->setForeground(QBrush(textColor));
+    }
+}
+
 void MainWindow::updateFullscreenUi()
 {
     const bool fullscreen = isFullScreen();
@@ -500,38 +551,51 @@ void MainWindow::saveState()
 
 void MainWindow::applyStyle()
 {
-    qApp->setStyleSheet(QStringLiteral(R"(
+    const bool dark = m_state.theme == QStringLiteral("dark");
+    m_themeButton->setText(dark ? tr("☀  Light mode")
+                                : tr("☾  Dark mode"));
+
+    if (dark) {
+        qApp->setStyleSheet(QStringLiteral(R"(
         QMainWindow, QWidget {
             background: #111419;
             color: #e7e9ed;
         }
         QWidget#sidebar {
-            background: #f4f5f7;
+            background: #171b21;
         }
         QLabel#sidebarHeading {
             background: transparent;
-            color: #4b5563;
+            color: #aeb5c0;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        QLabel#sidebarTip {
+            background: transparent;
+            color: #9ca3af;
+            font-size: 11px;
         }
         QListWidget#cameraList {
-            background: #ffffff;
-            color: #000000;
-            border: 1px solid #d1d5db;
+            background: #101318;
+            color: #f3f4f6;
+            border: 1px solid #343a43;
             border-radius: 5px;
             padding: 3px;
             outline: 0;
         }
         QListWidget#cameraList::item {
-            color: #000000;
-            background: #ffffff;
+            color: #f3f4f6;
+            background: #171b21;
             border-radius: 4px;
             padding: 3px;
         }
         QListWidget#cameraList::item:selected {
-            color: #000000;
-            background: #ffd9bd;
+            color: #ffffff;
+            background: #a9470b;
         }
         QLineEdit, QSpinBox, QComboBox {
             background: #1c2027;
+            color: #e7e9ed;
             border: 1px solid #343a43;
             border-radius: 4px;
             padding: 5px;
@@ -553,6 +617,73 @@ void MainWindow::applyStyle()
             background: #292f38;
             color: white;
             border: 1px solid #4b5563;
+        }
+    )"));
+        return;
+    }
+
+    qApp->setStyleSheet(QStringLiteral(R"(
+        QMainWindow, QWidget {
+            background: #eef1f5;
+            color: #111827;
+        }
+        QWidget#sidebar {
+            background: #f8fafc;
+        }
+        QLabel#sidebarHeading {
+            background: transparent;
+            color: #4b5563;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        QLabel#sidebarTip {
+            background: transparent;
+            color: #6b7280;
+            font-size: 11px;
+        }
+        QListWidget#cameraList {
+            background: #ffffff;
+            color: #111827;
+            border: 1px solid #cbd5e1;
+            border-radius: 5px;
+            padding: 3px;
+            outline: 0;
+        }
+        QListWidget#cameraList::item {
+            color: #111827;
+            background: #ffffff;
+            border-radius: 4px;
+            padding: 3px;
+        }
+        QListWidget#cameraList::item:selected {
+            color: #111827;
+            background: #ffd9bd;
+        }
+        QLineEdit, QSpinBox, QComboBox {
+            background: #ffffff;
+            color: #111827;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            padding: 5px;
+        }
+        QPushButton {
+            background: #ffffff;
+            color: #111827;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            padding: 6px 9px;
+        }
+        QPushButton:hover {
+            background: #f1f5f9;
+        }
+        QPushButton:pressed {
+            background: #ff7a1a;
+            color: #111419;
+        }
+        QToolTip {
+            background: #ffffff;
+            color: #111827;
+            border: 1px solid #94a3b8;
         }
     )"));
 }

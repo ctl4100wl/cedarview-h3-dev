@@ -41,6 +41,17 @@ void GridView::setCameras(const QList<Camera> &cameras)
 void GridView::setAssignments(const QStringList &assignments)
 {
     m_assignments = assignments;
+    QStringList occupiedCameraIds;
+    for (QString &cameraId : m_assignments) {
+        if (cameraId.isEmpty()) {
+            continue;
+        }
+        if (occupiedCameraIds.contains(cameraId)) {
+            cameraId.clear();
+        } else {
+            occupiedCameraIds.append(cameraId);
+        }
+    }
     rebuild();
 }
 
@@ -56,10 +67,7 @@ void GridView::assignCamera(const Camera &camera)
     if (m_selectedIndex < 0 || m_selectedIndex >= m_tiles.size()) {
         return;
     }
-    m_assignments.resize(m_tiles.size());
-    m_assignments[m_selectedIndex] = camera.id;
-    m_tiles.at(m_selectedIndex)->play(camera);
-    emit assignmentsChanged();
+    assignCameraToIndex(camera.id, m_selectedIndex);
 }
 
 void GridView::assignCameraToIndex(const QString &cameraId, int index)
@@ -70,7 +78,29 @@ void GridView::assignCameraToIndex(const QString &cameraId, int index)
     }
     selectTile(index);
     m_assignments.resize(m_tiles.size());
+
+    if (m_assignments.at(index) == camera.id) {
+        return;
+    }
+
+    // A camera may occupy only one tile. When it is dragged from the sidebar
+    // onto another tile, exchange that tile's assignment with its old one.
+    // Dropping onto an empty tile therefore behaves like a move.
+    const int previousIndex = m_assignments.indexOf(camera.id);
+    const QString displacedCameraId = m_assignments.at(index);
+    if (previousIndex >= 0 && previousIndex != index) {
+        m_assignments[previousIndex] = displacedCameraId;
+    }
     m_assignments[index] = camera.id;
+
+    if (previousIndex >= 0 && previousIndex != index) {
+        const Camera displacedCamera = findCamera(displacedCameraId);
+        if (displacedCamera.id.isEmpty()) {
+            m_tiles.at(previousIndex)->stop();
+        } else {
+            m_tiles.at(previousIndex)->play(displacedCamera);
+        }
+    }
     m_tiles.at(index)->play(camera);
     emit assignmentsChanged();
 }

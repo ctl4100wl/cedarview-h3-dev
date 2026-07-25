@@ -13,6 +13,7 @@ struct AppState
     QStringList assignments;
     QString defaultUsername = QStringLiteral("admin");
     QString defaultPassword;
+    QString theme = QStringLiteral("dark");
 };
 
 class ConfigStore

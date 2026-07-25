@@ -20,6 +20,10 @@ application code, cloud APIs, logos, or proprietary assets.
 - Frameless rectangular video wall with no camera-name bezels
 - Cached camera snapshots in the sidebar, refreshed sequentially at startup
 - Drag cameras from the sidebar directly onto a grid tile
+- Occupancy-aware camera moves: dragging an already shown camera to another
+  tile swaps the two tile assignments instead of duplicating the stream
+- Sidebar tile-position indicators
+- Persistent light and dark interface modes
 - Add, edit, and remove cameras
 - Lightweight preset grid dropdown from 1×1 through 5×5
 - Assign a camera to any selected tile
@@ -122,8 +126,10 @@ view.
 At startup, CedarView displays the last cached snapshot immediately and asks
 mpv to refresh one camera thumbnail at a time. This avoids launching a burst of
 extra decoders on the H3. Drag a snapshot from the sidebar onto any tile to
-place or replace that feed. Right-click a feed and select **Clear tile** to
-remove its assignment.
+place or replace that feed. If the camera is already on the wall, CedarView
+moves it to the new tile and moves the displaced camera back to the old tile.
+The sidebar shows each camera's current tile number. Right-click a feed and
+select **Clear tile** to remove its assignment.
 
 Choose the wall layout from the **Grid preset** dropdown. Click **Fullscreen**
 or press **F11** to hide the sidebar and status bar; press **Escape** to return.

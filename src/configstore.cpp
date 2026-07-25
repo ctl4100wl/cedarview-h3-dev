@@ -37,6 +37,11 @@ AppState ConfigStore::load()
             .toString(QStringLiteral("admin"));
     state.defaultPassword =
         root.value(QStringLiteral("defaultPassword")).toString();
+    state.theme = root.value(QStringLiteral("theme"))
+                      .toString(QStringLiteral("dark"));
+    if (state.theme != QStringLiteral("light")) {
+        state.theme = QStringLiteral("dark");
+    }
     const QJsonArray cameras = root.value(QStringLiteral("cameras")).toArray();
     for (const QJsonValue &value : cameras) {
         if (value.isObject()) {
@@ -82,6 +87,7 @@ bool ConfigStore::save(const AppState &state, QString *error)
         {QStringLiteral("gridColumns"), state.gridColumns},
         {QStringLiteral("defaultUsername"), state.defaultUsername},
         {QStringLiteral("defaultPassword"), state.defaultPassword},
+        {QStringLiteral("theme"), state.theme},
         {QStringLiteral("cameras"), cameras},
         {QStringLiteral("assignments"), assignments},
     };

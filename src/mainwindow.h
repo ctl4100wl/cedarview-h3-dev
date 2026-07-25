@@ -33,6 +33,7 @@ private slots:
     void assignCurrentCamera();
     void applyGrid();
     void toggleFullscreen();
+    void toggleTheme();
     void showPlaybackError(const QString &camera, const QString &message);
 
 private:
@@ -44,6 +45,7 @@ private:
     QString snapshotPath(const QString &cameraId) const;
     void updateCameraThumbnail(const QString &cameraId,
                                const QString &imagePath);
+    void updateAssignmentIndicators();
     void updateFullscreenUi();
     void saveState();
     void applyStyle();
@@ -54,6 +56,7 @@ private:
     QListWidget *m_cameraList = nullptr;
     QComboBox *m_gridPreset = nullptr;
     QPushButton *m_fullscreenButton = nullptr;
+    QPushButton *m_themeButton = nullptr;
     QQueue<Camera> m_snapshotQueue;
     QProcess *m_snapshotProcess = nullptr;
     QTimer *m_snapshotTimeout = nullptr;
