@@ -3,6 +3,8 @@
 CedarView is a lightweight native Linux RTSP camera viewer built for small ARM
 boards, with the Allwinner H3 running Armbian as the initial target.
 
+This is an independent application. It does not use or redistribute Imou
+application code, cloud APIs, logos, or proprietary assets.
 
 ## Current MVP
 
@@ -13,6 +15,8 @@ boards, with the Allwinner H3 running Armbian as the initial target.
 - Asynchronous LAN scan for devices exposing RTSP port 554
 - Editable camera-IP dropdown populated by scan results
 - TCP or UDP RTSP transport per camera
+- 16:9 camera tiles with Fill (center crop) or Fit display modes
+- Per-camera 100–200% digital zoom
 - Add, edit, and remove cameras
 - Custom grids from 1×1 through 5×5
 - Assign a camera to any selected tile
@@ -100,6 +104,7 @@ Click **Add** and enter:
 3. password
 4. main stream or sub-stream
 5. TCP or UDP
+6. Fill or Fit sizing and optional digital zoom
 
 CedarView generates this internally:
 
@@ -124,6 +129,11 @@ mpv --no-config \
 Each tile owns a separate `mpv` process attached to the tile's X11 window.
 Slow RTSP negotiation cannot block Qt's event loop, and one failed camera does
 not freeze the other tiles or the camera editor.
+
+**Fill 16:9** is the default and makes the picture as large as possible without
+stretching it; excess edges are center-cropped. **Fit 16:9** shows the complete
+camera frame and may add black bars. Digital zoom is applied by mpv and does
+not alter the camera's stream or consume extra network bandwidth.
 
 The LAN scan is intentionally simple and fast. It checks port 554 on the local
 IPv4 `/24` without attempting authentication. A result means an RTSP service

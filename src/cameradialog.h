@@ -40,6 +40,8 @@ private:
     QComboBox *m_streamCombo = nullptr;
     QComboBox *m_transportCombo = nullptr;
     QComboBox *m_bufferCombo = nullptr;
+    QComboBox *m_displayModeCombo = nullptr;
+    QSpinBox *m_zoomSpin = nullptr;
     QCheckBox *m_showPasswordCheck = nullptr;
     QCheckBox *m_rememberCredentialsCheck = nullptr;
     QSpinBox *m_channelSpin = nullptr;

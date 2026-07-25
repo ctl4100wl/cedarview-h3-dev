@@ -83,6 +83,22 @@ CameraDialog::CameraDialog(QWidget *parent)
     m_bufferCombo->addItem(tr("1500 ms — very stable"), 1500);
     m_bufferCombo->setCurrentIndex(m_bufferCombo->findData(300));
 
+    m_displayModeCombo = new QComboBox(this);
+    m_displayModeCombo->addItem(
+        tr("Fill 16:9 — crop edges, largest picture"),
+        QStringLiteral("fill"));
+    m_displayModeCombo->addItem(
+        tr("Fit 16:9 — show everything with black bars"),
+        QStringLiteral("fit"));
+
+    m_zoomSpin = new QSpinBox(this);
+    m_zoomSpin->setRange(100, 200);
+    m_zoomSpin->setSingleStep(10);
+    m_zoomSpin->setSuffix(QStringLiteral("%"));
+    m_zoomSpin->setValue(100);
+    m_zoomSpin->setToolTip(
+        tr("Digital zoom crops further into the center of the picture."));
+
     m_previewLabel = new QLabel(this);
     m_previewLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_previewLabel->setWordWrap(true);
@@ -101,6 +117,8 @@ CameraDialog::CameraDialog(QWidget *parent)
     form->addRow(tr("Video stream"), m_streamCombo);
     form->addRow(tr("Transport"), m_transportCombo);
     form->addRow(tr("Network buffer"), m_bufferCombo);
+    form->addRow(tr("Picture sizing"), m_displayModeCombo);
+    form->addRow(tr("Digital zoom"), m_zoomSpin);
     form->addRow(tr("Generated URL"), m_previewLabel);
 
     auto *warning = new QLabel(
@@ -190,6 +208,9 @@ void CameraDialog::setCamera(const Camera &camera)
         bufferIndex = m_bufferCombo->count() - 1;
     }
     m_bufferCombo->setCurrentIndex(bufferIndex);
+    m_displayModeCombo->setCurrentIndex(
+        qMax(0, m_displayModeCombo->findData(camera.displayMode)));
+    m_zoomSpin->setValue(qBound(100, camera.zoomPercent, 200));
     m_rememberCredentialsCheck->setChecked(false);
     updatePreview();
 }
@@ -205,6 +226,8 @@ Camera CameraDialog::camera() const
     result.subtype = m_streamCombo->currentData().toInt();
     result.transport = m_transportCombo->currentData().toString();
     result.latencyMs = m_bufferCombo->currentData().toInt();
+    result.displayMode = m_displayModeCombo->currentData().toString();
+    result.zoomPercent = m_zoomSpin->value();
     if (result.name.isEmpty()) {
         result.name = result.host;
     }

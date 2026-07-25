@@ -17,6 +17,8 @@ struct Camera
     int subtype = 1;
     int latencyMs = 300;
     QString transport = QStringLiteral("tcp");
+    QString displayMode = QStringLiteral("fill");
+    int zoomPercent = 100;
 
     static Camera create()
     {
@@ -58,6 +60,8 @@ struct Camera
             {QStringLiteral("subtype"), subtype},
             {QStringLiteral("latencyMs"), latencyMs},
             {QStringLiteral("transport"), transport},
+            {QStringLiteral("displayMode"), displayMode},
+            {QStringLiteral("zoomPercent"), zoomPercent},
         };
     }
 
@@ -73,6 +77,13 @@ struct Camera
         camera.subtype = object.value(QStringLiteral("subtype")).toInt(1);
         camera.latencyMs = object.value(QStringLiteral("latencyMs")).toInt(300);
         camera.transport = object.value(QStringLiteral("transport")).toString();
+        camera.displayMode =
+            object.value(QStringLiteral("displayMode")).toString(
+                QStringLiteral("fill"));
+        camera.zoomPercent =
+            qBound(100,
+                   object.value(QStringLiteral("zoomPercent")).toInt(100),
+                   200);
         if (camera.transport.isEmpty()) {
             camera.transport =
                 object.value(QStringLiteral("forceTcp")).toBool(true)
@@ -81,6 +92,9 @@ struct Camera
         }
         if (camera.transport != QStringLiteral("udp")) {
             camera.transport = QStringLiteral("tcp");
+        }
+        if (camera.displayMode != QStringLiteral("fit")) {
+            camera.displayMode = QStringLiteral("fill");
         }
 
         // Import CedarView 0.1.0 configurations that stored the complete URL.

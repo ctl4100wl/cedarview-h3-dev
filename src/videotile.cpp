@@ -2,11 +2,36 @@
 
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QtMath>
 #include <QMouseEvent>
 #include <QProcess>
 #include <QPushButton>
 #include <QTimer>
 #include <QVBoxLayout>
+
+namespace {
+
+class AspectRatioSurface final : public QWidget
+{
+public:
+    explicit AspectRatioSurface(QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        policy.setHeightForWidth(true);
+        setSizePolicy(policy);
+    }
+
+    bool hasHeightForWidth() const override { return true; }
+    int heightForWidth(int width) const override
+    {
+        return qMax(1, qRound(width * 9.0 / 16.0));
+    }
+
+    QSize sizeHint() const override { return QSize(640, 360); }
+};
+
+} // namespace
 
 VideoTile::VideoTile(int index, QWidget *parent)
     : QFrame(parent),
@@ -17,7 +42,7 @@ VideoTile::VideoTile(int index, QWidget *parent)
     setMinimumSize(200, 130);
     setSelected(false);
 
-    m_videoSurface = new QWidget(this);
+    m_videoSurface = new AspectRatioSurface(this);
     m_videoSurface->setAttribute(Qt::WA_NativeWindow);
     m_videoSurface->setAttribute(Qt::WA_OpaquePaintEvent);
     m_videoSurface->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -140,6 +165,18 @@ QStringList VideoTile::playerArguments() const
         QStringLiteral("--rtsp-transport=%1").arg(m_camera.transport),
         QStringLiteral("--msg-level=all=warn"),
     };
+
+    // The native child window is always 16:9. Fill preserves proportions and
+    // center-crops excess edges; Fit preserves the complete camera frame.
+    arguments.append(
+        m_camera.displayMode == QStringLiteral("fit")
+            ? QStringLiteral("--panscan=0")
+            : QStringLiteral("--panscan=1.0"));
+    const double zoom = qLn(
+        static_cast<double>(qBound(100, m_camera.zoomPercent, 200)) / 100.0)
+        / qLn(2.0);
+    arguments.append(
+        QStringLiteral("--video-zoom=%1").arg(zoom, 0, 'f', 4));
 
     if (m_camera.latencyMs <= 0) {
         arguments.append(QStringLiteral("--cache=no"));
