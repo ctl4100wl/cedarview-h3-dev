@@ -10,6 +10,7 @@ struct AppState
     QList<Camera> cameras;
     int gridRows = 2;
     int gridColumns = 2;
+    QString gridMode = QStringLiteral("count:4");
     QStringList assignments;
     QString defaultUsername = QStringLiteral("admin");
     QString defaultPassword;

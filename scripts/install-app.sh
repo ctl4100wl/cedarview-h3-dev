@@ -10,6 +10,8 @@ mkdir -p "${install_prefix}/bin"
 cmake --install "${project_dir}/build" --prefix "${install_prefix}"
 ln -sfn "${project_dir}/scripts/update.sh" \
   "${install_prefix}/bin/cedarview-update"
+install -m 755 "${project_dir}/scripts/cedarview-kiosk.sh" \
+  "${install_prefix}/bin/cedarview-kiosk"
 
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database \

@@ -19,7 +19,8 @@ class MainWindow final : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(bool startFullscreen = false,
+                        QWidget *parent = nullptr);
     ~MainWindow() override;
 
 protected:
@@ -47,6 +48,7 @@ private:
                                const QString &imagePath);
     void updateAssignmentIndicators();
     void updateFullscreenUi();
+    void applySelectedLayout();
     void saveState();
     void applyStyle();
 
@@ -61,4 +63,5 @@ private:
     QProcess *m_snapshotProcess = nullptr;
     QTimer *m_snapshotTimeout = nullptr;
     QString m_snapshotCameraId;
+    bool m_autoGrid = false;
 };

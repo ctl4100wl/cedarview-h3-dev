@@ -25,9 +25,11 @@ application code, cloud APIs, logos, or proprietary assets.
 - Sidebar tile-position indicators
 - Persistent light and dark interface modes
 - Add, edit, and remove cameras
-- Lightweight preset grid dropdown from 1×1 through 5×5
+- Automatic balanced layouts and camera-count presets from 1 through 25
+- Centered incomplete rows for odd counts such as 5, 7, and 9
 - Assign a camera to any selected tile
-- Fullscreen video-wall mode with F11 and Escape shortcuts
+- Fullscreen video-wall mode with button, F11, Escape, right-click exit, and
+  a `--fullscreen` startup option
 - Persistent camera and layout configuration
 - XVideo output with plain X11 fallback; no `glimagesink`
 - Private `0600` configuration file
@@ -131,8 +133,33 @@ moves it to the new tile and moves the displaced camera back to the old tile.
 The sidebar shows each camera's current tile number. Right-click a feed and
 select **Clear tile** to remove its assignment.
 
-Choose the wall layout from the **Grid preset** dropdown. Click **Fullscreen**
-or press **F11** to hide the sidebar and status bar; press **Escape** to return.
+Choose **Auto — use camera count** to recalculate the wall whenever cameras are
+added or removed. Camera-count presets use balanced rows and center an
+incomplete last row: 5 cameras become 3+2, 7 become 4+3, and 9 become 3×3.
+
+Click **Fullscreen** or press **F11** to hide the sidebar and status bar. Press
+**Escape**, or right-click any feed and choose **Exit fullscreen**, to return.
+Start directly in fullscreen with:
+
+```bash
+~/.local/bin/cedarview --fullscreen
+```
+
+## Automatic login camera-wall mode
+
+Keep LightDM installed: it creates the X11 desktop session required by Qt and
+mpv. After installing CedarView, enable automatic login and delayed fullscreen
+startup with:
+
+```bash
+./scripts/install-kiosk.sh
+sudo reboot
+```
+
+The installer writes a small LightDM override for the current user and a
+desktop autostart entry. CedarView starts five seconds after login so the
+display and wired network can settle. It does not replace the desktop or
+LightDM, so Escape or **Exit fullscreen** returns to the normal session.
 
 Before testing CedarView, the same generated URL can be tested directly:
 

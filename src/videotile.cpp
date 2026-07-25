@@ -230,12 +230,26 @@ void VideoTile::setSelected(bool selected)
         : tr("Drag a camera here or right-click to clear."));
 }
 
+void VideoTile::setFullscreenMode(bool fullscreen)
+{
+    m_fullscreenMode = fullscreen;
+}
+
 void VideoTile::contextMenuEvent(QContextMenuEvent *event)
 {
     QMenu menu(this);
+    QAction *exitFullscreenAction = nullptr;
+    if (m_fullscreenMode) {
+        exitFullscreenAction = menu.addAction(tr("Exit fullscreen"));
+        menu.addSeparator();
+    }
     QAction *clearAction = menu.addAction(tr("Clear tile"));
     clearAction->setEnabled(hasCamera());
-    if (menu.exec(event->globalPos()) == clearAction) {
+    QAction *selectedAction = menu.exec(event->globalPos());
+    if (exitFullscreenAction &&
+        selectedAction == exitFullscreenAction) {
+        emit exitFullscreenRequested();
+    } else if (selectedAction == clearAction) {
         stop();
         emit cleared(m_index);
     }

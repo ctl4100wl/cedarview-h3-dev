@@ -23,6 +23,7 @@ public:
     void play(const Camera &camera);
     void stop();
     void setSelected(bool selected);
+    void setFullscreenMode(bool fullscreen);
     int heightForWidth(int width) const override;
     QSize sizeHint() const override;
 
@@ -31,6 +32,7 @@ signals:
     void cleared(int index);
     void cameraDropped(const QString &cameraId, int index);
     void playbackError(int index, const QString &message);
+    void exitFullscreenRequested();
 
 protected:
     void contextMenuEvent(QContextMenuEvent *event) override;
@@ -52,4 +54,5 @@ private:
     QWidget *m_videoSurface = nullptr;
     QLabel *m_statusLabel = nullptr;
     quintptr m_windowHandle = 0;
+    bool m_fullscreenMode = false;
 };

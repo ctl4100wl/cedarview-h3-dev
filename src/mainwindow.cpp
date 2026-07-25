@@ -27,6 +27,7 @@
 #include <QStatusBar>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QtMath>
 
 #include <utility>
 
@@ -81,7 +82,7 @@ QPixmap thumbnailPixmap(const QString &path)
 
 } // namespace
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(bool startFullscreen, QWidget *parent)
     : QMainWindow(parent),
       m_state(ConfigStore::load())
 {
@@ -129,39 +130,55 @@ MainWindow::MainWindow(QWidget *parent)
     auto *gridLabel = new QLabel(tr("GRID PRESET"), m_sidebar);
     gridLabel->setObjectName(QStringLiteral("sidebarHeading"));
     m_gridPreset = new QComboBox(m_sidebar);
-    const struct {
-        const char *label;
-        int rows;
-        int columns;
-    } presets[] = {
-        {"1 camera (1 × 1)", 1, 1},
-        {"2 cameras (2 × 1)", 1, 2},
-        {"4 cameras (2 × 2)", 2, 2},
-        {"6 cameras (3 × 2)", 2, 3},
-        {"8 cameras (4 × 2)", 2, 4},
-        {"9 cameras (3 × 3)", 3, 3},
-        {"12 cameras (4 × 3)", 3, 4},
-        {"16 cameras (4 × 4)", 4, 4},
-        {"25 cameras (5 × 5)", 5, 5},
-    };
+    m_gridPreset->addItem(tr("Auto — use camera count"),
+                          QStringLiteral("auto"));
+    m_gridPreset->insertSeparator(m_gridPreset->count());
     int selectedPreset = -1;
-    for (const auto &preset : presets) {
+    QList<int> presets;
+    for (int count = 1; count <= 16; ++count) {
+        presets.append(count);
+    }
+    presets.append(20);
+    presets.append(25);
+    for (const int count : std::as_const(presets)) {
+        int rows = 1;
+        if (count == 3) {
+            rows = 2;
+        } else if (count >= 4) {
+            rows = qMax(1, qFloor(qSqrt(static_cast<double>(count))));
+        }
+        const int columns =
+            qCeil(static_cast<double>(count) / rows);
+        rows = qCeil(static_cast<double>(count) / columns);
+
+        QStringList rowSizes;
+        for (int row = 0; row < rows; ++row) {
+            rowSizes.append(QString::number(
+                qMin(columns, count - row * columns)));
+        }
+        const bool rectangular =
+            count == rows * columns && rows > 1;
+        const QString shape = rectangular
+            ? QStringLiteral("%1 × %2").arg(columns).arg(rows)
+            : rowSizes.join(QStringLiteral(" + "));
         m_gridPreset->addItem(
-            tr(preset.label),
-            QStringLiteral("%1x%2").arg(preset.rows).arg(preset.columns));
-        if (preset.rows == m_state.gridRows &&
-            preset.columns == m_state.gridColumns) {
+            count == 1
+                ? tr("1 camera (1 × 1)")
+                : tr("%1 cameras (%2)").arg(count).arg(shape),
+            QStringLiteral("count:%1").arg(count));
+        if (m_state.gridMode == QStringLiteral("count:%1").arg(count)) {
             selectedPreset = m_gridPreset->count() - 1;
         }
     }
+    if (m_state.gridMode == QStringLiteral("auto")) {
+        selectedPreset = 0;
+    }
     if (selectedPreset < 0) {
         m_gridPreset->addItem(
-            tr("Current layout (%1 × %2)")
-                .arg(m_state.gridColumns)
-                .arg(m_state.gridRows),
-            QStringLiteral("%1x%2")
-                .arg(m_state.gridRows)
-                .arg(m_state.gridColumns));
+            tr("Current layout (%1 cameras)")
+                .arg(m_state.gridRows * m_state.gridColumns),
+            QStringLiteral("count:%1")
+                .arg(m_state.gridRows * m_state.gridColumns));
         selectedPreset = m_gridPreset->count() - 1;
     }
     m_gridPreset->setCurrentIndex(selectedPreset);
@@ -196,8 +213,21 @@ MainWindow::MainWindow(QWidget *parent)
     sidebarLayout->addWidget(tip);
 
     m_grid = new GridView(this);
-    m_grid->setGridSize(m_state.gridRows, m_state.gridColumns);
     m_grid->setCameras(m_state.cameras);
+    m_autoGrid = m_state.gridMode == QStringLiteral("auto");
+    if (m_autoGrid) {
+        m_grid->setTileCount(qMax(1, m_state.cameras.size()));
+    } else {
+        const QString countText =
+            m_state.gridMode.section(QLatin1Char(':'), 1, 1);
+        bool validCount = false;
+        int count = countText.toInt(&validCount);
+        if (!validCount) {
+            count = m_state.gridRows * m_state.gridColumns;
+        }
+        m_grid->setTileCount(qBound(
+            1, count, 25));
+    }
     m_grid->setAssignments(m_state.assignments);
     connect(m_grid, &GridView::assignmentsChanged,
             this, [this] {
@@ -206,6 +236,12 @@ MainWindow::MainWindow(QWidget *parent)
             });
     connect(m_grid, &GridView::playbackError,
             this, &MainWindow::showPlaybackError);
+    connect(m_grid, &GridView::exitFullscreenRequested,
+            this, [this] {
+                if (isFullScreen()) {
+                    toggleFullscreen();
+                }
+            });
 
     auto *splitter = new QSplitter(this);
     splitter->setHandleWidth(1);
@@ -223,6 +259,12 @@ MainWindow::MainWindow(QWidget *parent)
         queueSnapshot(camera);
     }
     QTimer::singleShot(500, this, &MainWindow::startNextSnapshot);
+    if (startFullscreen) {
+        QTimer::singleShot(0, this, [this] {
+            showFullScreen();
+            updateFullscreenUi();
+        });
+    }
 }
 
 MainWindow::~MainWindow()
@@ -273,6 +315,9 @@ void MainWindow::addCamera()
     refreshCameraList();
     m_cameraList->setCurrentRow(m_state.cameras.size() - 1);
     m_grid->setCameras(m_state.cameras);
+    if (m_autoGrid) {
+        m_grid->setTileCount(qMax(1, m_state.cameras.size()));
+    }
     queueSnapshot(camera);
     startNextSnapshot();
     saveState();
@@ -298,6 +343,9 @@ void MainWindow::editCamera()
     refreshCameraList();
     m_cameraList->setCurrentRow(index);
     m_grid->setCameras(m_state.cameras);
+    if (m_autoGrid) {
+        m_grid->setTileCount(qMax(1, m_state.cameras.size()));
+    }
     queueSnapshot(camera);
     startNextSnapshot();
     saveState();
@@ -339,13 +387,19 @@ void MainWindow::assignCurrentCamera()
 
 void MainWindow::applyGrid()
 {
-    const QStringList size =
-        m_gridPreset->currentData().toString().split(QLatin1Char('x'));
-    if (size.size() != 2) {
-        return;
-    }
-    m_grid->setGridSize(size.at(0).toInt(), size.at(1).toInt());
+    applySelectedLayout();
     saveState();
+}
+
+void MainWindow::applySelectedLayout()
+{
+    const QString mode = m_gridPreset->currentData().toString();
+    m_autoGrid = mode == QStringLiteral("auto");
+    m_state.gridMode = mode;
+    const int count = m_autoGrid
+        ? qMax(1, m_state.cameras.size())
+        : qBound(1, mode.section(QLatin1Char(':'), 1, 1).toInt(), 25);
+    m_grid->setTileCount(count);
 }
 
 void MainWindow::toggleFullscreen()

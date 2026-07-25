@@ -16,11 +16,13 @@ public:
     explicit GridView(QWidget *parent = nullptr);
 
     void setGridSize(int rows, int columns);
+    void setTileCount(int count);
     void setCameras(const QList<Camera> &cameras);
     void setAssignments(const QStringList &assignments);
     QStringList assignments() const;
     int rows() const { return m_rows; }
     int columns() const { return m_columns; }
+    int tileCount() const { return m_tileCount; }
     int selectedIndex() const { return m_selectedIndex; }
     void setFullscreenMode(bool fullscreen);
 
@@ -32,6 +34,7 @@ public slots:
 signals:
     void assignmentsChanged();
     void playbackError(const QString &cameraName, const QString &message);
+    void exitFullscreenRequested();
 
 private:
     Camera findCamera(const QString &id) const;
@@ -44,5 +47,6 @@ private:
     QStringList m_assignments;
     int m_rows = 2;
     int m_columns = 2;
+    int m_tileCount = 4;
     int m_selectedIndex = 0;
 };

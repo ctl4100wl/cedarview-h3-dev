@@ -32,6 +32,12 @@ AppState ConfigStore::load()
     const QJsonObject root = document.object();
     state.gridRows = qBound(1, root.value(QStringLiteral("gridRows")).toInt(2), 5);
     state.gridColumns = qBound(1, root.value(QStringLiteral("gridColumns")).toInt(2), 5);
+    state.gridMode = root.value(QStringLiteral("gridMode")).toString();
+    if (state.gridMode != QStringLiteral("auto") &&
+        !state.gridMode.startsWith(QStringLiteral("count:"))) {
+        state.gridMode = QStringLiteral("count:%1")
+                             .arg(state.gridRows * state.gridColumns);
+    }
     state.defaultUsername =
         root.value(QStringLiteral("defaultUsername"))
             .toString(QStringLiteral("admin"));
@@ -82,9 +88,10 @@ bool ConfigStore::save(const AppState &state, QString *error)
     }
 
     const QJsonObject root{
-        {QStringLiteral("version"), 2},
+        {QStringLiteral("version"), 3},
         {QStringLiteral("gridRows"), state.gridRows},
         {QStringLiteral("gridColumns"), state.gridColumns},
+        {QStringLiteral("gridMode"), state.gridMode},
         {QStringLiteral("defaultUsername"), state.defaultUsername},
         {QStringLiteral("defaultPassword"), state.defaultPassword},
         {QStringLiteral("theme"), state.theme},

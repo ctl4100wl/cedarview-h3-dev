@@ -3,6 +3,7 @@
 #include "videotile.h"
 
 #include <QGridLayout>
+#include <QtMath>
 
 GridView::GridView(QWidget *parent)
     : QWidget(parent)
@@ -17,9 +18,36 @@ void GridView::setGridSize(int rows, int columns)
 {
     rows = qBound(1, rows, 5);
     columns = qBound(1, columns, 5);
-    if (rows == m_rows && columns == m_columns) {
+    const int count = rows * columns;
+    if (rows == m_rows && columns == m_columns &&
+        count == m_tileCount) {
         return;
     }
+    m_rows = rows;
+    m_columns = columns;
+    m_tileCount = count;
+    rebuild();
+    emit assignmentsChanged();
+}
+
+void GridView::setTileCount(int count)
+{
+    count = qBound(1, count, 25);
+
+    int rows = 1;
+    if (count == 3) {
+        rows = 2;
+    } else if (count >= 4) {
+        rows = qMax(1, qFloor(qSqrt(static_cast<double>(count))));
+    }
+    const int columns = qCeil(static_cast<double>(count) / rows);
+    rows = qCeil(static_cast<double>(count) / columns);
+
+    if (count == m_tileCount && rows == m_rows &&
+        columns == m_columns) {
+        return;
+    }
+    m_tileCount = count;
     m_rows = rows;
     m_columns = columns;
     rebuild();
@@ -58,7 +86,7 @@ void GridView::setAssignments(const QStringList &assignments)
 QStringList GridView::assignments() const
 {
     QStringList result = m_assignments;
-    result.resize(m_rows * m_columns);
+    result.resize(m_tileCount);
     return result;
 }
 
@@ -111,6 +139,9 @@ void GridView::setFullscreenMode(bool fullscreen)
     const int spacing = fullscreen ? 1 : 2;
     m_layout->setContentsMargins(margin, margin, margin, margin);
     m_layout->setSpacing(spacing);
+    for (VideoTile *tile : m_tiles) {
+        tile->setFullscreenMode(fullscreen);
+    }
 }
 
 void GridView::clearSelected()
@@ -145,7 +176,7 @@ void GridView::selectTile(int index)
 void GridView::rebuild()
 {
     QStringList retained = m_assignments;
-    retained.resize(m_rows * m_columns);
+    retained.resize(m_tileCount);
     m_assignments = retained;
 
     while (QLayoutItem *item = m_layout->takeAt(0)) {
@@ -159,7 +190,14 @@ void GridView::rebuild()
     }
     m_tiles.clear();
 
-    const int count = m_rows * m_columns;
+    for (int column = 0; column < 10; ++column) {
+        m_layout->setColumnStretch(column, 0);
+    }
+    for (int column = 0; column < m_columns * 2; ++column) {
+        m_layout->setColumnStretch(column, 1);
+    }
+
+    const int count = m_tileCount;
     for (int index = 0; index < count; ++index) {
         auto *tile = new VideoTile(index, this);
         connect(tile, &VideoTile::selected,
@@ -171,6 +209,8 @@ void GridView::rebuild()
         });
         connect(tile, &VideoTile::cameraDropped,
                 this, &GridView::assignCameraToIndex);
+        connect(tile, &VideoTile::exitFullscreenRequested,
+                this, &GridView::exitFullscreenRequested);
         connect(tile, &VideoTile::playbackError, this,
                 [this, tile](int, const QString &message) {
                     emit playbackError(tile->hasCamera()
@@ -178,7 +218,14 @@ void GridView::rebuild()
                         : tr("Camera"),
                         message);
                 });
-        m_layout->addWidget(tile, index / m_columns, index % m_columns);
+        const int row = index / m_columns;
+        const int firstIndexInRow = row * m_columns;
+        const int itemsInRow =
+            qMin(m_columns, count - firstIndexInRow);
+        const int centeredOffset = m_columns - itemsInRow;
+        const int virtualColumn =
+            centeredOffset + (index - firstIndexInRow) * 2;
+        m_layout->addWidget(tile, row, virtualColumn, 1, 2);
         m_tiles.append(tile);
 
         const Camera camera = findCamera(m_assignments.value(index));
