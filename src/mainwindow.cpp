@@ -127,10 +127,17 @@ int MainWindow::currentCameraIndex() const
 void MainWindow::addCamera()
 {
     CameraDialog dialog(this);
+    dialog.setDefaultCredentials(m_state.defaultUsername,
+                                 m_state.defaultPassword);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
-    m_state.cameras.append(dialog.camera());
+    const Camera camera = dialog.camera();
+    if (dialog.rememberCredentials()) {
+        m_state.defaultUsername = camera.username;
+        m_state.defaultPassword = camera.password;
+    }
+    m_state.cameras.append(camera);
     refreshCameraList();
     m_cameraList->setCurrentRow(m_state.cameras.size() - 1);
     m_grid->setCameras(m_state.cameras);
@@ -148,7 +155,12 @@ void MainWindow::editCamera()
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
-    m_state.cameras[index] = dialog.camera();
+    const Camera camera = dialog.camera();
+    if (dialog.rememberCredentials()) {
+        m_state.defaultUsername = camera.username;
+        m_state.defaultPassword = camera.password;
+    }
+    m_state.cameras[index] = camera;
     refreshCameraList();
     m_cameraList->setCurrentRow(index);
     m_grid->setCameras(m_state.cameras);

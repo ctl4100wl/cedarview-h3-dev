@@ -5,9 +5,11 @@
 #include <QDialog>
 
 class QComboBox;
+class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QSpinBox;
 class RtspScanner;
 
 class CameraDialog final : public QDialog
@@ -17,8 +19,11 @@ class CameraDialog final : public QDialog
 public:
     explicit CameraDialog(QWidget *parent = nullptr);
 
+    void setDefaultCredentials(const QString &username,
+                               const QString &password);
     void setCamera(const Camera &camera);
     Camera camera() const;
+    bool rememberCredentials() const;
 
 private slots:
     void startScan();
@@ -34,6 +39,10 @@ private:
     QLineEdit *m_passwordEdit = nullptr;
     QComboBox *m_streamCombo = nullptr;
     QComboBox *m_transportCombo = nullptr;
+    QComboBox *m_bufferCombo = nullptr;
+    QCheckBox *m_showPasswordCheck = nullptr;
+    QCheckBox *m_rememberCredentialsCheck = nullptr;
+    QSpinBox *m_channelSpin = nullptr;
     QPushButton *m_scanButton = nullptr;
     QLabel *m_scanStatus = nullptr;
     QLabel *m_previewLabel = nullptr;

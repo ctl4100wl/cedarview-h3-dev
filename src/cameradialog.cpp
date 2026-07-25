@@ -2,6 +2,7 @@
 
 #include "rtspscanner.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -10,6 +11,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QVBoxLayout>
 
 CameraDialog::CameraDialog(QWidget *parent)
@@ -40,17 +42,46 @@ CameraDialog::CameraDialog(QWidget *parent)
 
     m_usernameEdit = new QLineEdit(this);
     m_usernameEdit->setPlaceholderText(QStringLiteral("admin"));
+    m_usernameEdit->setText(QStringLiteral("admin"));
 
     m_passwordEdit = new QLineEdit(this);
     m_passwordEdit->setEchoMode(QLineEdit::Password);
+    m_passwordEdit->setPlaceholderText(
+        tr("Enter once, then reuse for new cameras"));
+
+    m_showPasswordCheck = new QCheckBox(tr("Show password"), this);
+    connect(m_showPasswordCheck, &QCheckBox::toggled,
+            m_passwordEdit, [this](bool checked) {
+                m_passwordEdit->setEchoMode(
+                    checked ? QLineEdit::Normal : QLineEdit::Password);
+            });
+
+    m_rememberCredentialsCheck =
+        new QCheckBox(tr("Use this login for new cameras"), this);
+    m_rememberCredentialsCheck->setChecked(true);
 
     m_streamCombo = new QComboBox(this);
     m_streamCombo->addItem(tr("Sub-stream — recommended for H3 grids"), 1);
     m_streamCombo->addItem(tr("Main stream — highest quality"), 0);
 
+    m_channelSpin = new QSpinBox(this);
+    m_channelSpin->setRange(1, 16);
+    m_channelSpin->setValue(1);
+    m_channelSpin->setToolTip(
+        tr("For a dual-lens camera, add it twice and select channel 1 "
+           "for one lens and channel 2 for the other."));
+
     m_transportCombo = new QComboBox(this);
     m_transportCombo->addItem(tr("TCP — reliable"), QStringLiteral("tcp"));
     m_transportCombo->addItem(tr("UDP — lower latency"), QStringLiteral("udp"));
+
+    m_bufferCombo = new QComboBox(this);
+    m_bufferCombo->addItem(tr("Disabled — minimum delay"), 0);
+    m_bufferCombo->addItem(tr("150 ms — low latency"), 150);
+    m_bufferCombo->addItem(tr("300 ms — balanced"), 300);
+    m_bufferCombo->addItem(tr("750 ms — stable"), 750);
+    m_bufferCombo->addItem(tr("1500 ms — very stable"), 1500);
+    m_bufferCombo->setCurrentIndex(m_bufferCombo->findData(300));
 
     m_previewLabel = new QLabel(this);
     m_previewLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -64,8 +95,12 @@ CameraDialog::CameraDialog(QWidget *parent)
     form->addRow(QString(), m_scanStatus);
     form->addRow(tr("Username"), m_usernameEdit);
     form->addRow(tr("Password"), m_passwordEdit);
+    form->addRow(QString(), m_showPasswordCheck);
+    form->addRow(QString(), m_rememberCredentialsCheck);
+    form->addRow(tr("Channel / lens"), m_channelSpin);
     form->addRow(tr("Video stream"), m_streamCombo);
     form->addRow(tr("Transport"), m_transportCombo);
+    form->addRow(tr("Network buffer"), m_bufferCombo);
     form->addRow(tr("Generated URL"), m_previewLabel);
 
     auto *warning = new QLabel(
@@ -113,7 +148,23 @@ CameraDialog::CameraDialog(QWidget *parent)
             this, &CameraDialog::updatePreview);
     connect(m_streamCombo, &QComboBox::currentIndexChanged,
             this, &CameraDialog::updatePreview);
+    connect(m_channelSpin, &QSpinBox::valueChanged,
+            this, &CameraDialog::updatePreview);
     updatePreview();
+}
+
+void CameraDialog::setDefaultCredentials(const QString &username,
+                                         const QString &password)
+{
+    if (m_usernameEdit->text().isEmpty() ||
+        m_usernameEdit->text() == QStringLiteral("admin")) {
+        m_usernameEdit->setText(
+            username.isEmpty() ? QStringLiteral("admin") : username);
+    }
+    if (m_passwordEdit->text().isEmpty()) {
+        m_passwordEdit->setText(password);
+    }
+    m_rememberCredentialsCheck->setChecked(true);
 }
 
 void CameraDialog::setCamera(const Camera &camera)
@@ -126,10 +177,20 @@ void CameraDialog::setCamera(const Camera &camera)
     m_hostCombo->setCurrentText(camera.host);
     m_usernameEdit->setText(camera.username);
     m_passwordEdit->setText(camera.password);
+    m_channelSpin->setValue(qMax(1, camera.channel));
     m_streamCombo->setCurrentIndex(
         qMax(0, m_streamCombo->findData(camera.subtype)));
     m_transportCombo->setCurrentIndex(
         qMax(0, m_transportCombo->findData(camera.transport)));
+    int bufferIndex = m_bufferCombo->findData(camera.latencyMs);
+    if (bufferIndex < 0) {
+        m_bufferCombo->addItem(
+            tr("%1 ms — custom").arg(camera.latencyMs),
+            camera.latencyMs);
+        bufferIndex = m_bufferCombo->count() - 1;
+    }
+    m_bufferCombo->setCurrentIndex(bufferIndex);
+    m_rememberCredentialsCheck->setChecked(false);
     updatePreview();
 }
 
@@ -140,13 +201,19 @@ Camera CameraDialog::camera() const
     result.host = m_hostCombo->currentText().trimmed();
     result.username = m_usernameEdit->text();
     result.password = m_passwordEdit->text();
-    result.channel = 1;
+    result.channel = m_channelSpin->value();
     result.subtype = m_streamCombo->currentData().toInt();
     result.transport = m_transportCombo->currentData().toString();
+    result.latencyMs = m_bufferCombo->currentData().toInt();
     if (result.name.isEmpty()) {
         result.name = result.host;
     }
     return result;
+}
+
+bool CameraDialog::rememberCredentials() const
+{
+    return m_rememberCredentialsCheck->isChecked();
 }
 
 void CameraDialog::startScan()

@@ -70,8 +70,11 @@ void VideoTile::play(const Camera &camera)
     m_player->setProcessChannelMode(QProcess::MergedChannels);
 
     connect(m_player, &QProcess::started, this, [this] {
-        setStatus(tr("Connecting via %1")
-                      .arg(m_camera.transport.toUpper()));
+        const QString bufferText = m_camera.latencyMs > 0
+            ? tr("%1 ms buffer").arg(m_camera.latencyMs)
+            : tr("no buffer");
+        setStatus(tr("Connecting via %1 • %2")
+                      .arg(m_camera.transport.toUpper(), bufferText));
         QProcess *expectedPlayer = m_player;
         QTimer::singleShot(1800, this, [this, expectedPlayer] {
             if (m_player == expectedPlayer &&
@@ -119,7 +122,7 @@ void VideoTile::play(const Camera &camera)
 
 QStringList VideoTile::playerArguments() const
 {
-    return {
+    QStringList arguments{
         QStringLiteral("--no-config"),
         QStringLiteral("--no-terminal"),
         QStringLiteral("--no-audio"),
@@ -128,7 +131,6 @@ QStringList VideoTile::playerArguments() const
         QStringLiteral("--input-default-bindings=no"),
         QStringLiteral("--input-cursor=no"),
         QStringLiteral("--profile=low-latency"),
-        QStringLiteral("--cache=no"),
         QStringLiteral("--framedrop=vo"),
         QStringLiteral("--hwdec=auto"),
         QStringLiteral("--hwdec-codecs=h264,hevc"),
@@ -137,8 +139,23 @@ QStringList VideoTile::playerArguments() const
         QStringLiteral("--wid=%1").arg(m_windowHandle),
         QStringLiteral("--rtsp-transport=%1").arg(m_camera.transport),
         QStringLiteral("--msg-level=all=warn"),
-        m_camera.resolvedRtspUrl(),
     };
+
+    if (m_camera.latencyMs <= 0) {
+        arguments.append(QStringLiteral("--cache=no"));
+    } else {
+        const QString seconds = QString::number(
+            static_cast<double>(m_camera.latencyMs) / 1000.0, 'f', 3);
+        arguments.append(QStringLiteral("--cache=yes"));
+        arguments.append(QStringLiteral("--cache-pause=no"));
+        arguments.append(
+            QStringLiteral("--cache-secs=%1").arg(seconds));
+        arguments.append(
+            QStringLiteral("--demuxer-readahead-secs=%1").arg(seconds));
+    }
+
+    arguments.append(m_camera.resolvedRtspUrl());
+    return arguments;
 }
 
 void VideoTile::collectPlayerOutput()
@@ -220,4 +237,3 @@ void VideoTile::releasePlayer(bool immediate)
         }
     });
 }
-
