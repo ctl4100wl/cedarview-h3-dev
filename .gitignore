@@ -1,5 +1,5 @@
+/build/
+*.user
+*.swp
+*~
 
-# Local files
-build/
-cedarview
-cedarview.pub
