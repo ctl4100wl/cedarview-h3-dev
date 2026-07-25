@@ -9,15 +9,17 @@ application code, cloud APIs, logos, or proprietary assets.
 ## Current MVP
 
 - Native Qt 6 Widgets interface
-- GStreamer RTSP playback
+- Isolated `mpv` playback process per tile
 - Simple Imou/Dahua setup using camera IP, username, and password
 - Automatic RTSP URL generation
+- Asynchronous LAN scan for devices exposing RTSP port 554
+- Editable camera-IP dropdown populated by scan results
+- TCP or UDP RTSP transport per camera
 - Add, edit, and remove cameras
-- RTSP-over-TCP option and adjustable latency
 - Custom grids from 1×1 through 5×5
 - Assign a camera to any selected tile
 - Persistent camera and layout configuration
-- `glimagesink` with automatic `ximagesink` fallback
+- XVideo output with plain X11 fallback; no `glimagesink`
 - Private `0600` configuration file
 
 The application can display up to 25 tiles, but that does not mean the H3 can
@@ -95,10 +97,11 @@ uses the update after the app is restarted.
 
 Click **Add** and enter:
 
-1. camera IP
+1. camera IP, selected from **Scan LAN** results or typed manually
 2. username
 3. password
 4. main stream or sub-stream
+5. TCP or UDP
 
 CedarView generates this internally:
 
@@ -109,29 +112,24 @@ rtsp://USERNAME:PASSWORD@CAMERA_IP:554/cam/realmonitor?channel=1&subtype=1
 Use the sub-stream for a 2×2 H3 grid. Use the main stream for a single-camera
 view.
 
-Before testing CedarView, the same generated URL can be tested with:
+Before testing CedarView, the same generated URL can be tested directly:
 
 ```bash
-gst-launch-1.0 playbin \
-  uri='rtsp://USERNAME:PASSWORD@CAMERA_IP:554/...' \
-  video-sink=glimagesink
+mpv --no-config \
+  --vo=xv,x11 \
+  --hwdec=auto \
+  --profile=low-latency \
+  --rtsp-transport=tcp \
+  'rtsp://USERNAME:PASSWORD@CAMERA_IP:554/...'
 ```
 
-If the video is black or the desktop is unstable, try:
+Each tile owns a separate `mpv` process attached to the tile's X11 window.
+Slow RTSP negotiation cannot block Qt's event loop, and one failed camera does
+not freeze the other tiles or the camera editor.
 
-```bash
-gst-launch-1.0 playbin \
-  uri='rtsp://USERNAME:PASSWORD@CAMERA_IP:554/...' \
-  video-sink=ximagesink
-```
-
-To make CedarView prefer the fallback permanently, change `"videoSink"` in:
-
-```text
-~/.config/MindLab/CedarView/config.json
-```
-
-Accepted values are `auto`, `glimagesink`, and `ximagesink`.
+The LAN scan is intentionally simple and fast. It checks port 554 on the local
+IPv4 `/24` without attempting authentication. A result means an RTSP service
+answered; the supplied username and password are still required.
 
 ## H3 performance checklist
 
@@ -140,13 +138,13 @@ Accepted values are `auto`, `glimagesink`, and `ximagesink`.
 3. Use sub-streams around 640×360 or 704×576, 10–15 FPS.
 4. Keep each sub-stream near 512–1024 kbit/s.
 5. Run `scripts/h3-video-diagnostics.sh`.
-6. Check `GST_DEBUG=2 ./build/cedarview` for decoder selection.
+6. Run the direct `mpv` test above before testing a grid.
 7. Avoid compositing effects and desktop scaling.
 
-If GStreamer selects `avdec_h264`, decoding is occurring on the CPU. Look for a
-V4L2 stateless/request decoder such as `v4l2slh264dec`; the exact factory name
-depends on the Armbian kernel and GStreamer build. `run-h3.sh` raises the rank
-of `v4l2slh264dec` automatically when that factory is available.
+`mpv --hwdec=auto` asks FFmpeg/mpv to select an available mainline hardware
+decode path and falls back to software decoding if none can initialize. Video
+output tries XVideo first and plain X11 second, avoiding the blank
+`glimagesink` path entirely.
 
 ## PTZ
 
@@ -168,5 +166,5 @@ take down the RTSP grid.
 - Prefer a dedicated read-only camera account.
 - Keep cameras on a trusted LAN or camera VLAN.
 - Do not expose port 554 directly to the internet.
-- CedarView currently stores the RTSP URL in a file readable only by the
+- CedarView currently stores camera credentials in a file readable only by the
   current Linux user. A future release should integrate Secret Service/KWallet.

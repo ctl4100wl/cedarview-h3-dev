@@ -18,7 +18,6 @@ public:
     void setGridSize(int rows, int columns);
     void setCameras(const QList<Camera> &cameras);
     void setAssignments(const QStringList &assignments);
-    void setVideoSinkPreference(const QString &preference);
     QStringList assignments() const;
     int rows() const { return m_rows; }
     int columns() const { return m_columns; }
@@ -41,9 +40,7 @@ private:
     QList<VideoTile *> m_tiles;
     QList<Camera> m_cameras;
     QStringList m_assignments;
-    QString m_sinkPreference = QStringLiteral("auto");
     int m_rows = 2;
     int m_columns = 2;
     int m_selectedIndex = 0;
 };
-

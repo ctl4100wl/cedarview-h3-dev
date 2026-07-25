@@ -44,15 +44,6 @@ void GridView::setAssignments(const QStringList &assignments)
     rebuild();
 }
 
-void GridView::setVideoSinkPreference(const QString &preference)
-{
-    if (m_sinkPreference == preference) {
-        return;
-    }
-    m_sinkPreference = preference;
-    rebuild();
-}
-
 QStringList GridView::assignments() const
 {
     QStringList result = m_assignments;
@@ -120,7 +111,6 @@ void GridView::rebuild()
     const int count = m_rows * m_columns;
     for (int index = 0; index < count; ++index) {
         auto *tile = new VideoTile(index, this);
-        tile->setVideoSinkPreference(m_sinkPreference);
         connect(tile, &VideoTile::selected,
                 this, &GridView::selectTile);
         connect(tile, &VideoTile::cleared, this, [this](int tileIndex) {
