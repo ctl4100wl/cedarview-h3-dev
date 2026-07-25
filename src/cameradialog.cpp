@@ -1,14 +1,15 @@
 #include "cameradialog.h"
 
-#include <QCheckBox>
+#include "rtspscanner.h"
+
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QSpinBox>
 #include <QVBoxLayout>
 
 CameraDialog::CameraDialog(QWidget *parent)
@@ -21,8 +22,21 @@ CameraDialog::CameraDialog(QWidget *parent)
     m_nameEdit = new QLineEdit(this);
     m_nameEdit->setPlaceholderText(tr("Optional — defaults to IP address"));
 
-    m_hostEdit = new QLineEdit(this);
-    m_hostEdit->setPlaceholderText(QStringLiteral("192.168.1.10"));
+    m_hostCombo = new QComboBox(this);
+    m_hostCombo->setEditable(true);
+    m_hostCombo->setInsertPolicy(QComboBox::NoInsert);
+    m_hostCombo->lineEdit()->setPlaceholderText(
+        QStringLiteral("192.168.1.10"));
+
+    m_scanButton = new QPushButton(tr("Scan LAN"), this);
+    m_scanStatus = new QLabel(this);
+    m_scanStatus->setStyleSheet(
+        QStringLiteral("color: #89919d; font-size: 11px;"));
+
+    auto *hostRow = new QHBoxLayout;
+    hostRow->setContentsMargins(0, 0, 0, 0);
+    hostRow->addWidget(m_hostCombo, 1);
+    hostRow->addWidget(m_scanButton);
 
     m_usernameEdit = new QLineEdit(this);
     m_usernameEdit->setPlaceholderText(QStringLiteral("admin"));
@@ -34,28 +48,24 @@ CameraDialog::CameraDialog(QWidget *parent)
     m_streamCombo->addItem(tr("Sub-stream — recommended for H3 grids"), 1);
     m_streamCombo->addItem(tr("Main stream — highest quality"), 0);
 
+    m_transportCombo = new QComboBox(this);
+    m_transportCombo->addItem(tr("TCP — reliable"), QStringLiteral("tcp"));
+    m_transportCombo->addItem(tr("UDP — lower latency"), QStringLiteral("udp"));
+
     m_previewLabel = new QLabel(this);
     m_previewLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_previewLabel->setWordWrap(true);
     m_previewLabel->setStyleSheet(
         QStringLiteral("color: #89919d; font-family: monospace;"));
 
-    m_latencySpin = new QSpinBox(this);
-    m_latencySpin->setRange(50, 5000);
-    m_latencySpin->setValue(300);
-    m_latencySpin->setSuffix(tr(" ms"));
-
-    m_tcpCheck = new QCheckBox(tr("Force RTSP over TCP"), this);
-    m_tcpCheck->setChecked(true);
-
     auto *form = new QFormLayout;
     form->addRow(tr("Name"), m_nameEdit);
-    form->addRow(tr("Camera IP"), m_hostEdit);
+    form->addRow(tr("Camera IP"), hostRow);
+    form->addRow(QString(), m_scanStatus);
     form->addRow(tr("Username"), m_usernameEdit);
     form->addRow(tr("Password"), m_passwordEdit);
     form->addRow(tr("Video stream"), m_streamCombo);
-    form->addRow(tr("Network latency"), m_latencySpin);
-    form->addRow(QString(), m_tcpCheck);
+    form->addRow(tr("Transport"), m_transportCombo);
     form->addRow(tr("Generated URL"), m_previewLabel);
 
     auto *warning = new QLabel(
@@ -78,7 +88,24 @@ CameraDialog::CameraDialog(QWidget *parent)
     layout->addWidget(warning);
     layout->addWidget(buttons);
 
-    connect(m_hostEdit, &QLineEdit::textChanged,
+    m_scanner = new RtspScanner(this);
+    connect(m_scanButton, &QPushButton::clicked,
+            this, &CameraDialog::startScan);
+    connect(m_scanner, &RtspScanner::cameraFound,
+            this, &CameraDialog::addScannedAddress);
+    connect(m_scanner, &RtspScanner::progressChanged, this,
+            [this](int completed, int total) {
+                m_scanStatus->setText(
+                    tr("Scanning port 554… %1/%2").arg(completed).arg(total));
+            });
+    connect(m_scanner, &RtspScanner::finished, this, [this] {
+        m_scanButton->setEnabled(true);
+        m_scanStatus->setText(
+            tr("Scan complete — %1 RTSP device(s)")
+                .arg(m_scanFound));
+    });
+
+    connect(m_hostCombo->lineEdit(), &QLineEdit::textChanged,
             this, &CameraDialog::updatePreview);
     connect(m_usernameEdit, &QLineEdit::textChanged,
             this, &CameraDialog::updatePreview);
@@ -93,13 +120,16 @@ void CameraDialog::setCamera(const Camera &camera)
 {
     m_camera = camera;
     m_nameEdit->setText(camera.name);
-    m_hostEdit->setText(camera.host);
+    if (m_hostCombo->findText(camera.host) < 0) {
+        m_hostCombo->addItem(camera.host);
+    }
+    m_hostCombo->setCurrentText(camera.host);
     m_usernameEdit->setText(camera.username);
     m_passwordEdit->setText(camera.password);
     m_streamCombo->setCurrentIndex(
         qMax(0, m_streamCombo->findData(camera.subtype)));
-    m_latencySpin->setValue(camera.latencyMs);
-    m_tcpCheck->setChecked(camera.forceTcp);
+    m_transportCombo->setCurrentIndex(
+        qMax(0, m_transportCombo->findData(camera.transport)));
     updatePreview();
 }
 
@@ -107,17 +137,35 @@ Camera CameraDialog::camera() const
 {
     Camera result = m_camera;
     result.name = m_nameEdit->text().trimmed();
-    result.host = m_hostEdit->text().trimmed();
+    result.host = m_hostCombo->currentText().trimmed();
     result.username = m_usernameEdit->text();
     result.password = m_passwordEdit->text();
     result.channel = 1;
     result.subtype = m_streamCombo->currentData().toInt();
-    result.latencyMs = m_latencySpin->value();
-    result.forceTcp = m_tcpCheck->isChecked();
+    result.transport = m_transportCombo->currentData().toString();
     if (result.name.isEmpty()) {
         result.name = result.host;
     }
     return result;
+}
+
+void CameraDialog::startScan()
+{
+    m_scanButton->setEnabled(false);
+    m_scanFound = 0;
+    m_scanStatus->setText(tr("Finding local networks…"));
+    m_scanner->start();
+}
+
+void CameraDialog::addScannedAddress(const QString &address)
+{
+    ++m_scanFound;
+    if (m_hostCombo->findText(address) < 0) {
+        m_hostCombo->addItem(address);
+    }
+    if (m_hostCombo->currentText().trimmed().isEmpty()) {
+        m_hostCombo->setCurrentText(address);
+    }
 }
 
 void CameraDialog::updatePreview()

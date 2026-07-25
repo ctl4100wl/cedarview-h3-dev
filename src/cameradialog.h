@@ -4,11 +4,11 @@
 
 #include <QDialog>
 
-class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
-class QSpinBox;
+class QPushButton;
+class RtspScanner;
 
 class CameraDialog final : public QDialog
 {
@@ -21,17 +21,22 @@ public:
     Camera camera() const;
 
 private slots:
+    void startScan();
+    void addScannedAddress(const QString &address);
     void updatePreview();
     void validateAndAccept();
 
 private:
     Camera m_camera;
     QLineEdit *m_nameEdit = nullptr;
-    QLineEdit *m_hostEdit = nullptr;
+    QComboBox *m_hostCombo = nullptr;
     QLineEdit *m_usernameEdit = nullptr;
     QLineEdit *m_passwordEdit = nullptr;
     QComboBox *m_streamCombo = nullptr;
+    QComboBox *m_transportCombo = nullptr;
+    QPushButton *m_scanButton = nullptr;
+    QLabel *m_scanStatus = nullptr;
     QLabel *m_previewLabel = nullptr;
-    QSpinBox *m_latencySpin = nullptr;
-    QCheckBox *m_tcpCheck = nullptr;
+    RtspScanner *m_scanner = nullptr;
+    int m_scanFound = 0;
 };

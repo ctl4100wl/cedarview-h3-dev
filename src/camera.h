@@ -16,7 +16,7 @@ struct Camera
     int channel = 1;
     int subtype = 1;
     int latencyMs = 300;
-    bool forceTcp = true;
+    QString transport = QStringLiteral("tcp");
 
     static Camera create()
     {
@@ -57,7 +57,7 @@ struct Camera
             {QStringLiteral("channel"), channel},
             {QStringLiteral("subtype"), subtype},
             {QStringLiteral("latencyMs"), latencyMs},
-            {QStringLiteral("forceTcp"), forceTcp},
+            {QStringLiteral("transport"), transport},
         };
     }
 
@@ -72,7 +72,16 @@ struct Camera
         camera.channel = object.value(QStringLiteral("channel")).toInt(1);
         camera.subtype = object.value(QStringLiteral("subtype")).toInt(1);
         camera.latencyMs = object.value(QStringLiteral("latencyMs")).toInt(300);
-        camera.forceTcp = object.value(QStringLiteral("forceTcp")).toBool(true);
+        camera.transport = object.value(QStringLiteral("transport")).toString();
+        if (camera.transport.isEmpty()) {
+            camera.transport =
+                object.value(QStringLiteral("forceTcp")).toBool(true)
+                ? QStringLiteral("tcp")
+                : QStringLiteral("udp");
+        }
+        if (camera.transport != QStringLiteral("udp")) {
+            camera.transport = QStringLiteral("tcp");
+        }
 
         // Import CedarView 0.1.0 configurations that stored the complete URL.
         if (camera.host.isEmpty()) {

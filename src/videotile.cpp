@@ -2,13 +2,11 @@
 
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QMetaObject>
 #include <QMouseEvent>
+#include <QProcess>
 #include <QPushButton>
 #include <QTimer>
 #include <QVBoxLayout>
-
-#include <gst/video/videooverlay.h>
 
 VideoTile::VideoTile(int index, QWidget *parent)
     : QFrame(parent),
@@ -52,49 +50,112 @@ VideoTile::VideoTile(int index, QWidget *parent)
     layout->setSpacing(0);
     layout->addWidget(m_videoSurface, 1);
     layout->addLayout(footer);
-
-    m_busTimer = new QTimer(this);
-    m_busTimer->setInterval(150);
-    connect(m_busTimer, &QTimer::timeout, this, &VideoTile::pollBus);
 }
 
 VideoTile::~VideoTile()
 {
-    releasePipeline();
-}
-
-void VideoTile::setVideoSinkPreference(const QString &preference)
-{
-    m_sinkPreference = preference;
+    releasePlayer(true);
 }
 
 void VideoTile::play(const Camera &camera)
 {
-    releasePipeline();
+    releasePlayer();
     m_camera = camera;
     m_titleLabel->setText(camera.name);
     m_stopButton->setEnabled(true);
-    setStatus(tr("Connecting…"));
+    m_playerOutput.clear();
+    setStatus(tr("Starting mpv…"));
 
-    QString error;
-    if (!createPipeline(&error)) {
-        setStatus(tr("Failed"), true);
-        emit playbackError(m_index, error);
+    m_player = new QProcess(this);
+    m_player->setProcessChannelMode(QProcess::MergedChannels);
+
+    connect(m_player, &QProcess::started, this, [this] {
+        setStatus(tr("Connecting via %1")
+                      .arg(m_camera.transport.toUpper()));
+        QProcess *expectedPlayer = m_player;
+        QTimer::singleShot(1800, this, [this, expectedPlayer] {
+            if (m_player == expectedPlayer &&
+                m_player->state() == QProcess::Running) {
+                setStatus(tr("Live"));
+            }
+        });
+    });
+    connect(m_player, &QProcess::readyReadStandardOutput,
+            this, &VideoTile::collectPlayerOutput);
+    connect(m_player, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+                if (error == QProcess::FailedToStart) {
+                    setStatus(tr("mpv missing"), true);
+                    emit playbackError(
+                        m_index,
+                        tr("Could not launch mpv. Install the mpv package."));
+                }
+            });
+    connect(m_player,
+            qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+            this, [this](int exitCode, QProcess::ExitStatus status) {
+                collectPlayerOutput();
+                if (m_player && m_player->property("cedarviewStopping").toBool()) {
+                    return;
+                }
+                setStatus(tr("Offline"), true);
+                QString detail = QString::fromUtf8(m_playerOutput).trimmed();
+                if (detail.size() > 800) {
+                    detail = detail.right(800);
+                }
+                if (detail.isEmpty()) {
+                    detail = tr("mpv exited (%1, code %2)")
+                                 .arg(status == QProcess::CrashExit
+                                          ? tr("crashed")
+                                          : tr("stopped"))
+                                 .arg(exitCode);
+                }
+                emit playbackError(m_index, detail);
+            });
+
+    m_player->start(QStringLiteral("mpv"), playerArguments(),
+                    QIODevice::ReadOnly);
+}
+
+QStringList VideoTile::playerArguments() const
+{
+    return {
+        QStringLiteral("--no-config"),
+        QStringLiteral("--no-terminal"),
+        QStringLiteral("--no-audio"),
+        QStringLiteral("--no-osc"),
+        QStringLiteral("--osd-level=0"),
+        QStringLiteral("--input-default-bindings=no"),
+        QStringLiteral("--input-cursor=no"),
+        QStringLiteral("--profile=low-latency"),
+        QStringLiteral("--cache=no"),
+        QStringLiteral("--framedrop=vo"),
+        QStringLiteral("--hwdec=auto"),
+        QStringLiteral("--hwdec-codecs=h264,hevc"),
+        // Avoid OpenGL entirely. XVideo is tried first, then plain X11.
+        QStringLiteral("--vo=xv,x11"),
+        QStringLiteral("--wid=%1").arg(m_windowHandle),
+        QStringLiteral("--rtsp-transport=%1").arg(m_camera.transport),
+        QStringLiteral("--msg-level=all=warn"),
+        m_camera.resolvedRtspUrl(),
+    };
+}
+
+void VideoTile::collectPlayerOutput()
+{
+    if (!m_player) {
         return;
     }
-
-    m_busTimer->start();
-    const GstStateChangeReturn result =
-        gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
-    if (result == GST_STATE_CHANGE_FAILURE) {
-        setStatus(tr("Failed"), true);
-        emit playbackError(m_index, tr("GStreamer rejected the stream."));
+    m_playerOutput.append(m_player->readAllStandardOutput());
+    constexpr qsizetype MaxLogBytes = 4096;
+    if (m_playerOutput.size() > MaxLogBytes) {
+        m_playerOutput = m_playerOutput.right(MaxLogBytes);
     }
 }
 
 void VideoTile::stop()
 {
-    releasePipeline();
+    releasePlayer();
     m_camera = Camera{};
     m_titleLabel->setText(tr("Empty tile"));
     m_stopButton->setEnabled(false);
@@ -120,148 +181,6 @@ void VideoTile::mousePressEvent(QMouseEvent *event)
     QFrame::mousePressEvent(event);
 }
 
-GstElement *VideoTile::createVideoSink(QString *selectedName)
-{
-    QStringList candidates;
-    if (m_sinkPreference == QStringLiteral("glimagesink")) {
-        candidates << QStringLiteral("glimagesink");
-    } else if (m_sinkPreference == QStringLiteral("ximagesink")) {
-        candidates << QStringLiteral("ximagesink");
-    } else {
-        candidates << QStringLiteral("glimagesink")
-                   << QStringLiteral("ximagesink");
-    }
-
-    for (const QString &name : candidates) {
-        GstElement *sink = gst_element_factory_make(name.toUtf8().constData(),
-                                                    "cedarview-video-sink");
-        if (sink) {
-            g_object_set(sink, "sync", FALSE, nullptr);
-            if (selectedName) {
-                *selectedName = name;
-            }
-            return sink;
-        }
-    }
-    return nullptr;
-}
-
-bool VideoTile::createPipeline(QString *error)
-{
-    m_pipeline = gst_element_factory_make("playbin", nullptr);
-    if (!m_pipeline) {
-        *error = tr("The GStreamer playbin plugin is missing.");
-        return false;
-    }
-
-    QString sinkName;
-    m_videoSink = createVideoSink(&sinkName);
-    if (!m_videoSink) {
-        *error = tr("Neither glimagesink nor ximagesink is installed.");
-        releasePipeline();
-        return false;
-    }
-
-    const QByteArray uri = m_camera.resolvedRtspUrl().toUtf8();
-    g_object_set(m_pipeline,
-                 "uri", uri.constData(),
-                 "video-sink", m_videoSink,
-                 nullptr);
-    g_signal_connect(m_pipeline, "source-setup",
-                     G_CALLBACK(VideoTile::sourceSetupHandler), this);
-
-    GstBus *bus = gst_element_get_bus(m_pipeline);
-    gst_bus_set_sync_handler(bus, VideoTile::busSyncHandler, this, nullptr);
-    gst_object_unref(bus);
-    setStatus(tr("Connecting via %1").arg(sinkName));
-    return true;
-}
-
-void VideoTile::sourceSetupHandler(GstElement *, GstElement *source,
-                                   gpointer userData)
-{
-    auto *tile = static_cast<VideoTile *>(userData);
-    GObjectClass *klass = G_OBJECT_GET_CLASS(source);
-
-    if (g_object_class_find_property(klass, "latency")) {
-        g_object_set(source, "latency", tile->m_camera.latencyMs, nullptr);
-    }
-    if (tile->m_camera.forceTcp &&
-        g_object_class_find_property(klass, "protocols")) {
-        // GstRTSPLowerTrans TCP is bit 2, i.e. integer value 4.
-        g_object_set(source, "protocols", 4, nullptr);
-    }
-    if (g_object_class_find_property(klass, "drop-on-latency")) {
-        g_object_set(source, "drop-on-latency", TRUE, nullptr);
-    }
-    if (g_object_class_find_property(klass, "tcp-timeout")) {
-        g_object_set(source, "tcp-timeout",
-                     static_cast<guint64>(10 * G_USEC_PER_SEC), nullptr);
-    }
-}
-
-GstBusSyncReply VideoTile::busSyncHandler(GstBus *, GstMessage *message,
-                                          gpointer userData)
-{
-    auto *tile = static_cast<VideoTile *>(userData);
-    if (gst_is_video_overlay_prepare_window_handle_message(message)) {
-        GstVideoOverlay *overlay = GST_VIDEO_OVERLAY(GST_MESSAGE_SRC(message));
-        gst_video_overlay_set_window_handle(
-            overlay, static_cast<guintptr>(tile->m_windowHandle));
-        return GST_BUS_PASS;
-    }
-    return GST_BUS_PASS;
-}
-
-void VideoTile::pollBus()
-{
-    if (!m_pipeline) {
-        return;
-    }
-
-    GstBus *bus = gst_element_get_bus(m_pipeline);
-    while (GstMessage *message = gst_bus_pop(bus)) {
-        switch (GST_MESSAGE_TYPE(message)) {
-        case GST_MESSAGE_ERROR: {
-            GError *gstError = nullptr;
-            gchar *debug = nullptr;
-            gst_message_parse_error(message, &gstError, &debug);
-            const QString text = gstError
-                ? QString::fromUtf8(gstError->message)
-                : tr("Unknown playback error");
-            setStatus(tr("Offline"), true);
-            emit playbackError(m_index, text);
-            if (gstError) {
-                g_error_free(gstError);
-            }
-            g_free(debug);
-            break;
-        }
-        case GST_MESSAGE_STATE_CHANGED:
-            if (GST_MESSAGE_SRC(message) == GST_OBJECT(m_pipeline)) {
-                GstState oldState;
-                GstState newState;
-                GstState pending;
-                gst_message_parse_state_changed(
-                    message, &oldState, &newState, &pending);
-                Q_UNUSED(oldState)
-                Q_UNUSED(pending)
-                if (newState == GST_STATE_PLAYING) {
-                    setStatus(tr("Live"));
-                }
-            }
-            break;
-        case GST_MESSAGE_EOS:
-            setStatus(tr("Stream ended"), true);
-            break;
-        default:
-            break;
-        }
-        gst_message_unref(message);
-    }
-    gst_object_unref(bus);
-}
-
 void VideoTile::setStatus(const QString &text, bool error)
 {
     m_statusLabel->setText(text);
@@ -270,18 +189,35 @@ void VideoTile::setStatus(const QString &text, bool error)
         : QStringLiteral("color: #88909b;"));
 }
 
-void VideoTile::releasePipeline()
+void VideoTile::releasePlayer(bool immediate)
 {
-    m_busTimer->stop();
-    if (!m_pipeline) {
-        m_videoSink = nullptr;
+    if (!m_player) {
         return;
     }
-    GstBus *bus = gst_element_get_bus(m_pipeline);
-    gst_bus_set_sync_handler(bus, nullptr, nullptr, nullptr);
-    gst_object_unref(bus);
-    gst_element_set_state(m_pipeline, GST_STATE_NULL);
-    gst_object_unref(m_pipeline);
-    m_pipeline = nullptr;
-    m_videoSink = nullptr;
+
+    QProcess *player = m_player;
+    m_player = nullptr;
+    player->setProperty("cedarviewStopping", true);
+    player->disconnect(this);
+
+    if (player->state() == QProcess::NotRunning) {
+        player->deleteLater();
+        return;
+    }
+
+    if (immediate) {
+        player->kill();
+        return;
+    }
+
+    player->terminate();
+    connect(player,
+            qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+            player, &QObject::deleteLater);
+    QTimer::singleShot(500, player, [player] {
+        if (player->state() != QProcess::NotRunning) {
+            player->kill();
+        }
+    });
 }
+

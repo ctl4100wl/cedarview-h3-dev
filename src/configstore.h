@@ -11,7 +11,6 @@ struct AppState
     int gridRows = 2;
     int gridColumns = 2;
     QStringList assignments;
-    QString videoSink = QStringLiteral("auto");
 };
 
 class ConfigStore
@@ -21,4 +20,3 @@ public:
     static bool save(const AppState &state, QString *error = nullptr);
     static QString configFilePath();
 };
-

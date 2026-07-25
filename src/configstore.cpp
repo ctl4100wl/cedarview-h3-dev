@@ -32,9 +32,6 @@ AppState ConfigStore::load()
     const QJsonObject root = document.object();
     state.gridRows = qBound(1, root.value(QStringLiteral("gridRows")).toInt(2), 5);
     state.gridColumns = qBound(1, root.value(QStringLiteral("gridColumns")).toInt(2), 5);
-    state.videoSink = root.value(QStringLiteral("videoSink")).toString(
-        QStringLiteral("auto"));
-
     const QJsonArray cameras = root.value(QStringLiteral("cameras")).toArray();
     for (const QJsonValue &value : cameras) {
         if (value.isObject()) {
@@ -78,7 +75,6 @@ bool ConfigStore::save(const AppState &state, QString *error)
         {QStringLiteral("version"), 1},
         {QStringLiteral("gridRows"), state.gridRows},
         {QStringLiteral("gridColumns"), state.gridColumns},
-        {QStringLiteral("videoSink"), state.videoSink},
         {QStringLiteral("cameras"), cameras},
         {QStringLiteral("assignments"), assignments},
     };

@@ -88,7 +88,6 @@ MainWindow::MainWindow(QWidget *parent)
     sidebarLayout->addWidget(tip);
 
     m_grid = new GridView(this);
-    m_grid->setVideoSinkPreference(m_state.videoSink);
     m_grid->setGridSize(m_state.gridRows, m_state.gridColumns);
     m_grid->setCameras(m_state.cameras);
     m_grid->setAssignments(m_state.assignments);
