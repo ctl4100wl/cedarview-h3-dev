@@ -8,8 +8,8 @@ GridView::GridView(QWidget *parent)
     : QWidget(parent)
 {
     m_layout = new QGridLayout(this);
-    m_layout->setContentsMargins(6, 6, 6, 6);
-    m_layout->setSpacing(6);
+    m_layout->setContentsMargins(2, 2, 2, 2);
+    m_layout->setSpacing(2);
     rebuild();
 }
 
@@ -60,6 +60,27 @@ void GridView::assignCamera(const Camera &camera)
     m_assignments[m_selectedIndex] = camera.id;
     m_tiles.at(m_selectedIndex)->play(camera);
     emit assignmentsChanged();
+}
+
+void GridView::assignCameraToIndex(const QString &cameraId, int index)
+{
+    const Camera camera = findCamera(cameraId);
+    if (camera.id.isEmpty() || index < 0 || index >= m_tiles.size()) {
+        return;
+    }
+    selectTile(index);
+    m_assignments.resize(m_tiles.size());
+    m_assignments[index] = camera.id;
+    m_tiles.at(index)->play(camera);
+    emit assignmentsChanged();
+}
+
+void GridView::setFullscreenMode(bool fullscreen)
+{
+    const int margin = fullscreen ? 0 : 2;
+    const int spacing = fullscreen ? 1 : 2;
+    m_layout->setContentsMargins(margin, margin, margin, margin);
+    m_layout->setSpacing(spacing);
 }
 
 void GridView::clearSelected()
@@ -118,6 +139,8 @@ void GridView::rebuild()
             m_assignments[tileIndex].clear();
             emit assignmentsChanged();
         });
+        connect(tile, &VideoTile::cameraDropped,
+                this, &GridView::assignCameraToIndex);
         connect(tile, &VideoTile::playbackError, this,
                 [this, tile](int, const QString &message) {
                     emit playbackError(tile->hasCamera()

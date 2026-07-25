@@ -22,9 +22,11 @@ public:
     int rows() const { return m_rows; }
     int columns() const { return m_columns; }
     int selectedIndex() const { return m_selectedIndex; }
+    void setFullscreenMode(bool fullscreen);
 
 public slots:
     void assignCamera(const Camera &camera);
+    void assignCameraToIndex(const QString &cameraId, int index);
     void clearSelected();
 
 signals:

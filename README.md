@@ -17,9 +17,13 @@ application code, cloud APIs, logos, or proprietary assets.
 - TCP or UDP RTSP transport per camera
 - 16:9 camera tiles with Fill (center crop) or Fit display modes
 - Per-camera 100–200% digital zoom
+- Frameless rectangular video wall with no camera-name bezels
+- Cached camera snapshots in the sidebar, refreshed sequentially at startup
+- Drag cameras from the sidebar directly onto a grid tile
 - Add, edit, and remove cameras
-- Custom grids from 1×1 through 5×5
+- Lightweight preset grid dropdown from 1×1 through 5×5
 - Assign a camera to any selected tile
+- Fullscreen video-wall mode with F11 and Escape shortcuts
 - Persistent camera and layout configuration
 - XVideo output with plain X11 fallback; no `glimagesink`
 - Private `0600` configuration file
@@ -114,6 +118,15 @@ rtsp://USERNAME:PASSWORD@CAMERA_IP:554/cam/realmonitor?channel=1&subtype=1
 
 Use the sub-stream for a 2×2 H3 grid. Use the main stream for a single-camera
 view.
+
+At startup, CedarView displays the last cached snapshot immediately and asks
+mpv to refresh one camera thumbnail at a time. This avoids launching a burst of
+extra decoders on the H3. Drag a snapshot from the sidebar onto any tile to
+place or replace that feed. Right-click a feed and select **Clear tile** to
+remove its assignment.
+
+Choose the wall layout from the **Grid preset** dropdown. Click **Fullscreen**
+or press **F11** to hide the sidebar and status bar; press **Escape** to return.
 
 Before testing CedarView, the same generated URL can be tested directly:
 

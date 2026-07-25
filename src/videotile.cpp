@@ -1,13 +1,17 @@
 #include "videotile.h"
 
-#include <QHBoxLayout>
+#include <QContextMenuEvent>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QEvent>
 #include <QLabel>
-#include <QtMath>
+#include <QMenu>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QProcess>
-#include <QPushButton>
+#include <QStackedLayout>
 #include <QTimer>
-#include <QVBoxLayout>
+#include <QtMath>
 
 namespace {
 
@@ -34,47 +38,42 @@ public:
 } // namespace
 
 VideoTile::VideoTile(int index, QWidget *parent)
-    : QFrame(parent),
+    : QWidget(parent),
       m_index(index)
 {
     setObjectName(QStringLiteral("videoTile"));
-    setFrameShape(QFrame::StyledPanel);
     setMinimumSize(200, 130);
+    QSizePolicy tilePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    tilePolicy.setHeightForWidth(true);
+    setSizePolicy(tilePolicy);
+    setAcceptDrops(true);
+    setContextMenuPolicy(Qt::DefaultContextMenu);
     setSelected(false);
 
     m_videoSurface = new AspectRatioSurface(this);
     m_videoSurface->setAttribute(Qt::WA_NativeWindow);
     m_videoSurface->setAttribute(Qt::WA_OpaquePaintEvent);
     m_videoSurface->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_videoSurface->setAcceptDrops(true);
+    m_videoSurface->installEventFilter(this);
     m_videoSurface->setAutoFillBackground(true);
     m_videoSurface->setStyleSheet(QStringLiteral("background: #080a0d;"));
     m_videoSurface->setMinimumHeight(90);
     m_windowHandle = static_cast<quintptr>(m_videoSurface->winId());
 
-    m_titleLabel = new QLabel(tr("Empty tile"), this);
-    m_titleLabel->setStyleSheet(QStringLiteral("font-weight: 600;"));
-    m_statusLabel = new QLabel(tr("Select a camera"), this);
-    m_statusLabel->setStyleSheet(QStringLiteral("color: #88909b;"));
+    m_statusLabel = new QLabel(tr("Drop a camera here"), this);
+    m_statusLabel->setAlignment(Qt::AlignCenter);
+    m_statusLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_statusLabel->setStyleSheet(QStringLiteral(
+        "background: rgba(8, 10, 13, 175); color: #9ca3af; "
+        "padding: 8px;"));
 
-    m_stopButton = new QPushButton(tr("Clear"), this);
-    m_stopButton->setFlat(true);
-    m_stopButton->setEnabled(false);
-    connect(m_stopButton, &QPushButton::clicked, this, [this] {
-        stop();
-        emit cleared(m_index);
-    });
-
-    auto *footer = new QHBoxLayout;
-    footer->setContentsMargins(8, 3, 5, 4);
-    footer->addWidget(m_titleLabel);
-    footer->addWidget(m_statusLabel, 1);
-    footer->addWidget(m_stopButton);
-
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(2, 2, 2, 2);
-    layout->setSpacing(0);
-    layout->addWidget(m_videoSurface, 1);
-    layout->addLayout(footer);
+    auto *layout = new QStackedLayout(this);
+    layout->setStackingMode(QStackedLayout::StackAll);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(m_videoSurface);
+    layout->addWidget(m_statusLabel);
+    layout->setCurrentWidget(m_statusLabel);
 }
 
 VideoTile::~VideoTile()
@@ -82,12 +81,20 @@ VideoTile::~VideoTile()
     releasePlayer(true);
 }
 
+int VideoTile::heightForWidth(int width) const
+{
+    return qMax(1, qRound(width * 9.0 / 16.0));
+}
+
+QSize VideoTile::sizeHint() const
+{
+    return QSize(640, 360);
+}
+
 void VideoTile::play(const Camera &camera)
 {
     releasePlayer();
     m_camera = camera;
-    m_titleLabel->setText(camera.name);
-    m_stopButton->setEnabled(true);
     m_playerOutput.clear();
     setStatus(tr("Starting mpv…"));
 
@@ -211,36 +218,80 @@ void VideoTile::stop()
 {
     releasePlayer();
     m_camera = Camera{};
-    m_titleLabel->setText(tr("Empty tile"));
-    m_stopButton->setEnabled(false);
-    setStatus(tr("Select a camera"));
+    setStatus(tr("Drop a camera here"));
     m_videoSurface->update();
 }
 
 void VideoTile::setSelected(bool selected)
 {
     setProperty("selected", selected);
-    setStyleSheet(selected
-        ? QStringLiteral(
-              "QFrame#videoTile { border: 2px solid #ff7a1a; "
-              "background: #171a1f; border-radius: 4px; }")
-        : QStringLiteral(
-              "QFrame#videoTile { border: 1px solid #363b43; "
-              "background: #171a1f; border-radius: 4px; }"));
+    setToolTip(selected
+        ? tr("Selected tile. Drag a camera here or right-click to clear.")
+        : tr("Drag a camera here or right-click to clear."));
+}
+
+void VideoTile::contextMenuEvent(QContextMenuEvent *event)
+{
+    QMenu menu(this);
+    QAction *clearAction = menu.addAction(tr("Clear tile"));
+    clearAction->setEnabled(hasCamera());
+    if (menu.exec(event->globalPos()) == clearAction) {
+        stop();
+        emit cleared(m_index);
+    }
+}
+
+void VideoTile::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (event->mimeData()->hasFormat(
+            QStringLiteral("application/x-cedarview-camera-id"))) {
+        event->acceptProposedAction();
+    }
+}
+
+void VideoTile::dropEvent(QDropEvent *event)
+{
+    const QByteArray id = event->mimeData()->data(
+        QStringLiteral("application/x-cedarview-camera-id"));
+    if (id.isEmpty()) {
+        return;
+    }
+    emit cameraDropped(QString::fromUtf8(id), m_index);
+    event->acceptProposedAction();
+}
+
+bool VideoTile::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_videoSurface) {
+        if (event->type() == QEvent::DragEnter) {
+            dragEnterEvent(static_cast<QDragEnterEvent *>(event));
+            return event->isAccepted();
+        }
+        if (event->type() == QEvent::Drop) {
+            dropEvent(static_cast<QDropEvent *>(event));
+            return event->isAccepted();
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void VideoTile::mousePressEvent(QMouseEvent *event)
 {
     emit selected(m_index);
-    QFrame::mousePressEvent(event);
+    QWidget::mousePressEvent(event);
 }
 
 void VideoTile::setStatus(const QString &text, bool error)
 {
     m_statusLabel->setText(text);
+    m_statusLabel->setVisible(text != tr("Live"));
     m_statusLabel->setStyleSheet(error
-        ? QStringLiteral("color: #ff6b6b;")
-        : QStringLiteral("color: #88909b;"));
+        ? QStringLiteral(
+              "background: rgba(8, 10, 13, 190); color: #ff6b6b; "
+              "padding: 8px;")
+        : QStringLiteral(
+              "background: rgba(8, 10, 13, 175); color: #9ca3af; "
+              "padding: 8px;"));
 }
 
 void VideoTile::releasePlayer(bool immediate)
