@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=CedarView
+Comment=Lightweight RTSP camera grid for Linux
+Exec=@CMAKE_INSTALL_PREFIX@/@CMAKE_INSTALL_BINDIR@/cedarview
+Terminal=false
+Categories=AudioVideo;Video;Security;
+

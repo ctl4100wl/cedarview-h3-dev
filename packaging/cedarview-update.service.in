@@ -1,0 +1,11 @@
+[Unit]
+Description=Update CedarView from its Git remote
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=@PROJECT_DIR@/scripts/update.sh --non-interactive
+Nice=10
+IOSchedulingClass=idle
+
