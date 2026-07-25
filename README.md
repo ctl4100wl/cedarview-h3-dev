@@ -3,8 +3,6 @@
 CedarView is a lightweight native Linux RTSP camera viewer built for small ARM
 boards, with the Allwinner H3 running Armbian as the initial target.
 
-This is an independent application. It does not use or redistribute Imou
-application code, cloud APIs, logos, or proprietary assets.
 
 ## Current MVP
 
