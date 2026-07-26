@@ -12,5 +12,9 @@ if ! command -v mpv >/dev/null 2>&1; then
   echo "mpv is missing. Run ./scripts/install-armbian.sh first." >&2
   exit 2
 fi
+if ! gst-inspect-1.0 playbin >/dev/null 2>&1; then
+  echo "GStreamer is missing. Run ./scripts/install-armbian.sh first." >&2
+  exit 3
+fi
 
 exec "${binary}" "$@"

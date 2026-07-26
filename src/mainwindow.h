@@ -35,6 +35,7 @@ private slots:
     void applyGrid();
     void toggleFullscreen();
     void toggleTheme();
+    void showDeveloperSettings();
     void showPlaybackError(const QString &camera, const QString &message);
 
 private:

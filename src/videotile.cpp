@@ -13,6 +13,8 @@
 #include <QTimer>
 #include <QtMath>
 
+#include <gst/video/videooverlay.h>
+
 namespace {
 
 class AspectRatioSurface final : public QWidget
@@ -74,10 +76,16 @@ VideoTile::VideoTile(int index, QWidget *parent)
     layout->addWidget(m_videoSurface);
     layout->addWidget(m_statusLabel);
     layout->setCurrentWidget(m_statusLabel);
+
+    m_busTimer = new QTimer(this);
+    m_busTimer->setInterval(120);
+    connect(m_busTimer, &QTimer::timeout,
+            this, &VideoTile::pollGStreamerBus);
 }
 
 VideoTile::~VideoTile()
 {
+    releaseGStreamer();
     releasePlayer(true);
 }
 
@@ -93,11 +101,20 @@ QSize VideoTile::sizeHint() const
 
 void VideoTile::play(const Camera &camera)
 {
+    releaseGStreamer();
     releasePlayer();
     m_camera = camera;
     m_playerOutput.clear();
-    setStatus(tr("Starting mpv…"));
+    if (m_playbackBackend == QStringLiteral("gstreamer")) {
+        playGStreamer();
+    } else {
+        playMpv();
+    }
+}
 
+void VideoTile::playMpv()
+{
+    setStatus(tr("Starting mpv…"));
     m_player = new QProcess(this);
     m_player->setProcessChannelMode(QProcess::MergedChannels);
 
@@ -150,6 +167,179 @@ void VideoTile::play(const Camera &camera)
 
     m_player->start(QStringLiteral("mpv"), playerArguments(),
                     QIODevice::ReadOnly);
+}
+
+void VideoTile::playGStreamer()
+{
+    setStatus(tr("Starting GStreamer / Cedrus…"));
+    QString error;
+    if (!createGStreamerPipeline(&error)) {
+        setStatus(tr("GStreamer failed"), true);
+        emit playbackError(m_index, error);
+        return;
+    }
+    m_busTimer->start();
+    if (gst_element_set_state(m_pipeline, GST_STATE_PLAYING)
+        == GST_STATE_CHANGE_FAILURE) {
+        setStatus(tr("GStreamer failed"), true);
+        emit playbackError(
+            m_index, tr("GStreamer rejected the RTSP stream."));
+    }
+}
+
+GstElement *VideoTile::createGStreamerSink(QString *selectedName)
+{
+    const QStringList candidates{
+        QStringLiteral("xvimagesink"),
+        QStringLiteral("ximagesink"),
+    };
+    for (const QString &name : candidates) {
+        GstElement *sink = gst_element_factory_make(
+            name.toUtf8().constData(), nullptr);
+        if (!sink) {
+            continue;
+        }
+        g_object_set(sink, "sync", FALSE, nullptr);
+        if (g_object_class_find_property(
+                G_OBJECT_GET_CLASS(sink), "force-aspect-ratio")) {
+            g_object_set(sink, "force-aspect-ratio", TRUE, nullptr);
+        }
+        if (selectedName) {
+            *selectedName = name;
+        }
+        return sink;
+    }
+    return nullptr;
+}
+
+bool VideoTile::createGStreamerPipeline(QString *error)
+{
+    // GStreamer typefind chooses H.264 or H.265 from the stream. Raising only
+    // these two stateless decoder factories makes playbin prefer Cedrus while
+    // keeping the normal software decoder as a fallback.
+    for (const char *name : {"v4l2slh264dec", "v4l2slh265dec"}) {
+        GstElementFactory *factory = gst_element_factory_find(name);
+        if (factory) {
+            gst_plugin_feature_set_rank(
+                GST_PLUGIN_FEATURE(factory), GST_RANK_PRIMARY + 100);
+            gst_object_unref(factory);
+        }
+    }
+
+    m_pipeline = gst_element_factory_make("playbin", nullptr);
+    if (!m_pipeline) {
+        *error = tr("The GStreamer playbin plugin is missing.");
+        return false;
+    }
+
+    QString sinkName;
+    m_videoSink = createGStreamerSink(&sinkName);
+    if (!m_videoSink) {
+        *error = tr("Neither xvimagesink nor ximagesink is installed.");
+        releaseGStreamer();
+        return false;
+    }
+
+    const QByteArray uri = m_camera.resolvedRtspUrl().toUtf8();
+    g_object_set(m_pipeline,
+                 "uri", uri.constData(),
+                 "video-sink", m_videoSink,
+                 nullptr);
+    // Video only: disable audio and text flags while keeping video enabled.
+    g_object_set(m_pipeline, "flags", 0x00000001, nullptr);
+    g_signal_connect(m_pipeline, "source-setup",
+                     G_CALLBACK(VideoTile::sourceSetupHandler), this);
+
+    GstBus *bus = gst_element_get_bus(m_pipeline);
+    gst_bus_set_sync_handler(bus, VideoTile::busSyncHandler, this, nullptr);
+    gst_object_unref(bus);
+    setStatus(tr("Connecting via GStreamer • %1").arg(sinkName));
+    return true;
+}
+
+void VideoTile::sourceSetupHandler(GstElement *, GstElement *source,
+                                   gpointer userData)
+{
+    auto *tile = static_cast<VideoTile *>(userData);
+    GObjectClass *klass = G_OBJECT_GET_CLASS(source);
+    if (g_object_class_find_property(klass, "latency")) {
+        g_object_set(source, "latency",
+                     qMax(0, tile->m_camera.latencyMs), nullptr);
+    }
+    if (g_object_class_find_property(klass, "protocols")) {
+        // GstRTSPLowerTrans: UDP=1, UDP multicast=2, TCP=4.
+        const int protocols =
+            tile->m_camera.transport == QStringLiteral("udp") ? 1 : 4;
+        g_object_set(source, "protocols", protocols, nullptr);
+    }
+    if (g_object_class_find_property(klass, "drop-on-latency")) {
+        g_object_set(source, "drop-on-latency", TRUE, nullptr);
+    }
+    if (g_object_class_find_property(klass, "tcp-timeout")) {
+        g_object_set(source, "tcp-timeout",
+                     static_cast<guint64>(10 * G_USEC_PER_SEC), nullptr);
+    }
+}
+
+GstBusSyncReply VideoTile::busSyncHandler(GstBus *, GstMessage *message,
+                                          gpointer userData)
+{
+    auto *tile = static_cast<VideoTile *>(userData);
+    if (gst_is_video_overlay_prepare_window_handle_message(message)) {
+        GstVideoOverlay *overlay =
+            GST_VIDEO_OVERLAY(GST_MESSAGE_SRC(message));
+        gst_video_overlay_set_window_handle(
+            overlay, static_cast<guintptr>(tile->m_windowHandle));
+    }
+    return GST_BUS_PASS;
+}
+
+void VideoTile::pollGStreamerBus()
+{
+    if (!m_pipeline) {
+        return;
+    }
+    GstBus *bus = gst_element_get_bus(m_pipeline);
+    while (GstMessage *message = gst_bus_pop(bus)) {
+        switch (GST_MESSAGE_TYPE(message)) {
+        case GST_MESSAGE_ERROR: {
+            GError *gstError = nullptr;
+            gchar *debug = nullptr;
+            gst_message_parse_error(message, &gstError, &debug);
+            const QString text = gstError
+                ? QString::fromUtf8(gstError->message)
+                : tr("Unknown GStreamer playback error");
+            setStatus(tr("Offline"), true);
+            emit playbackError(m_index, text);
+            if (gstError) {
+                g_error_free(gstError);
+            }
+            g_free(debug);
+            break;
+        }
+        case GST_MESSAGE_STATE_CHANGED:
+            if (GST_MESSAGE_SRC(message) == GST_OBJECT(m_pipeline)) {
+                GstState oldState;
+                GstState newState;
+                GstState pending;
+                gst_message_parse_state_changed(
+                    message, &oldState, &newState, &pending);
+                Q_UNUSED(oldState)
+                Q_UNUSED(pending)
+                if (newState == GST_STATE_PLAYING) {
+                    setStatus(tr("Live"));
+                }
+            }
+            break;
+        case GST_MESSAGE_EOS:
+            setStatus(tr("Stream ended"), true);
+            break;
+        default:
+            break;
+        }
+        gst_message_unref(message);
+    }
+    gst_object_unref(bus);
 }
 
 QStringList VideoTile::playerArguments() const
@@ -216,10 +406,26 @@ void VideoTile::collectPlayerOutput()
 
 void VideoTile::stop()
 {
+    releaseGStreamer();
     releasePlayer();
     m_camera = Camera{};
     setStatus(tr("Drop a camera here"));
     m_videoSurface->update();
+}
+
+void VideoTile::setPlaybackBackend(const QString &backend)
+{
+    const QString normalized = backend == QStringLiteral("gstreamer")
+        ? QStringLiteral("gstreamer")
+        : QStringLiteral("mpv");
+    if (normalized == m_playbackBackend) {
+        return;
+    }
+    m_playbackBackend = normalized;
+    if (hasCamera()) {
+        const Camera camera = m_camera;
+        play(camera);
+    }
 }
 
 void VideoTile::setSelected(bool selected)
@@ -338,4 +544,22 @@ void VideoTile::releasePlayer(bool immediate)
             player->kill();
         }
     });
+}
+
+void VideoTile::releaseGStreamer()
+{
+    if (m_busTimer) {
+        m_busTimer->stop();
+    }
+    if (!m_pipeline) {
+        m_videoSink = nullptr;
+        return;
+    }
+    GstBus *bus = gst_element_get_bus(m_pipeline);
+    gst_bus_set_sync_handler(bus, nullptr, nullptr, nullptr);
+    gst_object_unref(bus);
+    gst_element_set_state(m_pipeline, GST_STATE_NULL);
+    gst_object_unref(m_pipeline);
+    m_pipeline = nullptr;
+    m_videoSink = nullptr;
 }

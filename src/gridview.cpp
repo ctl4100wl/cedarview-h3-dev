@@ -144,6 +144,20 @@ void GridView::setFullscreenMode(bool fullscreen)
     }
 }
 
+void GridView::setPlaybackBackend(const QString &backend)
+{
+    const QString normalized = backend == QStringLiteral("gstreamer")
+        ? QStringLiteral("gstreamer")
+        : QStringLiteral("mpv");
+    if (normalized == m_playbackBackend) {
+        return;
+    }
+    m_playbackBackend = normalized;
+    for (VideoTile *tile : m_tiles) {
+        tile->setPlaybackBackend(m_playbackBackend);
+    }
+}
+
 void GridView::clearSelected()
 {
     if (m_selectedIndex < 0 || m_selectedIndex >= m_tiles.size()) {
@@ -200,6 +214,7 @@ void GridView::rebuild()
     const int count = m_tileCount;
     for (int index = 0; index < count; ++index) {
         auto *tile = new VideoTile(index, this);
+        tile->setPlaybackBackend(m_playbackBackend);
         connect(tile, &VideoTile::selected,
                 this, &GridView::selectTile);
         connect(tile, &VideoTile::cleared, this, [this](int tileIndex) {

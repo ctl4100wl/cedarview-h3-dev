@@ -15,6 +15,7 @@ struct AppState
     QString defaultUsername = QStringLiteral("admin");
     QString defaultPassword;
     QString theme = QStringLiteral("dark");
+    QString playbackBackend = QStringLiteral("mpv");
 };
 
 class ConfigStore

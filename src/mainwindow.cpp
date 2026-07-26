@@ -8,8 +8,11 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDir>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFile>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QKeyEvent>
@@ -28,6 +31,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QtMath>
+
+#include <gst/gst.h>
 
 #include <utility>
 
@@ -78,6 +83,16 @@ QPixmap thumbnailPixmap(const QString &path)
     return source.copy((source.width() - Width) / 2,
                        (source.height() - Height) / 2,
                        Width, Height);
+}
+
+bool gstFactoryAvailable(const char *name)
+{
+    GstElementFactory *factory = gst_element_factory_find(name);
+    if (!factory) {
+        return false;
+    }
+    gst_object_unref(factory);
+    return true;
 }
 
 } // namespace
@@ -193,6 +208,11 @@ MainWindow::MainWindow(bool startFullscreen, QWidget *parent)
     connect(m_themeButton, &QPushButton::clicked,
             this, &MainWindow::toggleTheme);
 
+    auto *developerButton =
+        new QPushButton(tr("Developer settings…"), m_sidebar);
+    connect(developerButton, &QPushButton::clicked,
+            this, &MainWindow::showDeveloperSettings);
+
     auto *tip = new QLabel(
         tr("Drag a camera snapshot onto any tile. Press F11 for fullscreen "
            "and Esc to exit."),
@@ -210,9 +230,11 @@ MainWindow::MainWindow(bool startFullscreen, QWidget *parent)
     sidebarLayout->addWidget(m_gridPreset);
     sidebarLayout->addWidget(m_fullscreenButton);
     sidebarLayout->addWidget(m_themeButton);
+    sidebarLayout->addWidget(developerButton);
     sidebarLayout->addWidget(tip);
 
     m_grid = new GridView(this);
+    m_grid->setPlaybackBackend(m_state.playbackBackend);
     m_grid->setCameras(m_state.cameras);
     m_autoGrid = m_state.gridMode == QStringLiteral("auto");
     if (m_autoGrid) {
@@ -420,6 +442,71 @@ void MainWindow::toggleTheme()
     applyStyle();
     updateAssignmentIndicators();
     saveState();
+}
+
+void MainWindow::showDeveloperSettings()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Developer settings"));
+    dialog.setMinimumWidth(430);
+
+    auto *backend = new QComboBox(&dialog);
+    backend->addItem(tr("MPV / FFmpeg (stable default)"),
+                     QStringLiteral("mpv"));
+    backend->addItem(tr("GStreamer / Cedrus (experimental)"),
+                     QStringLiteral("gstreamer"));
+    const int current =
+        backend->findData(m_state.playbackBackend);
+    backend->setCurrentIndex(qMax(0, current));
+
+    const bool h264Available = gstFactoryAvailable("v4l2slh264dec");
+    const bool h265Available = gstFactoryAvailable("v4l2slh265dec");
+    auto *status = new QLabel(
+        tr("Cedrus decoders: H.264 %1 • H.265 %2")
+            .arg(h264Available ? tr("ready") : tr("missing"),
+                 h265Available ? tr("ready") : tr("missing")),
+        &dialog);
+    status->setWordWrap(true);
+
+    auto *note = new QLabel(
+        tr("Changing backend restarts every active tile. GStreamer mode "
+           "prefers the stateless V4L2 H.264/H.265 decoders and embeds "
+           "XVideo directly in each tile. MPV mode preserves CedarView's "
+           "full crop and digital-zoom controls."),
+        &dialog);
+    note->setWordWrap(true);
+
+    auto *form = new QFormLayout;
+    form->addRow(tr("Playback backend"), backend);
+    form->addRow(QString(), status);
+    form->addRow(QString(), note);
+
+    auto *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted,
+            &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected,
+            &dialog, &QDialog::reject);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->addLayout(form);
+    layout->addWidget(buttons);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const QString selected = backend->currentData().toString();
+    if (selected == m_state.playbackBackend) {
+        return;
+    }
+    m_state.playbackBackend = selected;
+    m_grid->setPlaybackBackend(selected);
+    saveState();
+    statusBar()->showMessage(
+        selected == QStringLiteral("gstreamer")
+            ? tr("Playback switched to GStreamer / Cedrus")
+            : tr("Playback switched to MPV / FFmpeg"),
+        5000);
 }
 
 void MainWindow::showPlaybackError(const QString &camera,

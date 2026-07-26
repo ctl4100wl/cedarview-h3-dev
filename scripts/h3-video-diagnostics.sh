@@ -33,6 +33,16 @@ ffmpeg -hide_banner -decoders 2>/dev/null |
   sed -n '1,120p' || true
 
 echo
+echo "GStreamer stateless Cedrus decoders:"
+for element in v4l2slh264dec v4l2slh265dec; do
+  if gst-inspect-1.0 "${element}" >/dev/null 2>&1; then
+    echo "  ${element}: ready"
+  else
+    echo "  ${element}: missing"
+  fi
+done
+
+echo
 echo "X11 session:"
 echo "  DISPLAY=${DISPLAY:-not set}"
 echo "  XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-not set}"
@@ -41,4 +51,3 @@ echo
 echo "Direct player test:"
 echo "  mpv --no-config --vo=xv,x11 --hwdec=auto --profile=low-latency \\"
 echo "      --rtsp-transport=tcp 'rtsp://USER:PASSWORD@CAMERA/…'"
-

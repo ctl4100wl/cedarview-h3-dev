@@ -25,6 +25,7 @@ public:
     int tileCount() const { return m_tileCount; }
     int selectedIndex() const { return m_selectedIndex; }
     void setFullscreenMode(bool fullscreen);
+    void setPlaybackBackend(const QString &backend);
 
 public slots:
     void assignCamera(const Camera &camera);
@@ -49,4 +50,5 @@ private:
     int m_columns = 2;
     int m_tileCount = 4;
     int m_selectedIndex = 0;
+    QString m_playbackBackend = QStringLiteral("mpv");
 };

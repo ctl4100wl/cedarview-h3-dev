@@ -9,7 +9,9 @@ application code, cloud APIs, logos, or proprietary assets.
 ## Current MVP
 
 - Native Qt 6 Widgets interface
-- Isolated `mpv` playback process per tile
+- Selectable MPV/FFmpeg or native GStreamer playback per tile
+- Experimental Cedrus mode using GStreamer's stateless V4L2 H.264/H.265
+  decoders
 - Simple Imou/Dahua setup using camera IP, username, and password
 - Automatic RTSP URL generation
 - Asynchronous LAN scan for devices exposing RTSP port 554
@@ -50,6 +52,21 @@ chmod +x scripts/*.sh
 ./scripts/h3-video-diagnostics.sh
 ./scripts/install-app.sh
 ~/.local/bin/cedarview
+```
+
+Use **Developer settings…** to switch the persistent playback backend. Changing
+it restarts active tiles immediately:
+
+- **MPV / FFmpeg** is the stable default and preserves crop and digital zoom.
+- **GStreamer / Cedrus** prefers `v4l2slh264dec` or `v4l2slh265dec`
+  automatically after inspecting the stream codec. It uses `xvimagesink` with
+  `ximagesink` fallback and embeds each sink in its Qt tile.
+
+Install or verify both backend stacks independently with:
+
+```bash
+./scripts/setup-playback-backends.sh
+./scripts/check-playback-backends.sh
 ```
 
 The dependency script targets current Debian/Ubuntu-based Armbian images using
@@ -172,9 +189,10 @@ mpv --no-config \
   'rtsp://USERNAME:PASSWORD@CAMERA_IP:554/...'
 ```
 
-Each tile owns a separate `mpv` process attached to the tile's X11 window.
-Slow RTSP negotiation cannot block Qt's event loop, and one failed camera does
-not freeze the other tiles or the camera editor.
+In MPV mode each tile owns a separate `mpv` process attached to its X11
+window. In GStreamer mode each tile owns an independent native pipeline and
+embedded XVideo sink. Slow RTSP negotiation cannot block Qt's event loop, and
+one failed camera does not freeze the other tiles or the camera editor.
 
 **Fill 16:9** is the default and makes the picture as large as possible without
 stretching it; excess edges are center-cropped. **Fit 16:9** shows the complete

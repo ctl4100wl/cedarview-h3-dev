@@ -48,6 +48,12 @@ AppState ConfigStore::load()
     if (state.theme != QStringLiteral("light")) {
         state.theme = QStringLiteral("dark");
     }
+    state.playbackBackend =
+        root.value(QStringLiteral("playbackBackend"))
+            .toString(QStringLiteral("mpv"));
+    if (state.playbackBackend != QStringLiteral("gstreamer")) {
+        state.playbackBackend = QStringLiteral("mpv");
+    }
     const QJsonArray cameras = root.value(QStringLiteral("cameras")).toArray();
     for (const QJsonValue &value : cameras) {
         if (value.isObject()) {
@@ -88,13 +94,14 @@ bool ConfigStore::save(const AppState &state, QString *error)
     }
 
     const QJsonObject root{
-        {QStringLiteral("version"), 3},
+        {QStringLiteral("version"), 4},
         {QStringLiteral("gridRows"), state.gridRows},
         {QStringLiteral("gridColumns"), state.gridColumns},
         {QStringLiteral("gridMode"), state.gridMode},
         {QStringLiteral("defaultUsername"), state.defaultUsername},
         {QStringLiteral("defaultPassword"), state.defaultPassword},
         {QStringLiteral("theme"), state.theme},
+        {QStringLiteral("playbackBackend"), state.playbackBackend},
         {QStringLiteral("cameras"), cameras},
         {QStringLiteral("assignments"), assignments},
     };
