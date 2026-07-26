@@ -2,7 +2,10 @@
 
 #include "videotile.h"
 
+#include <QApplication>
+#include <QEvent>
 #include <QGridLayout>
+#include <QTimer>
 #include <QtMath>
 
 GridView::GridView(QWidget *parent)
@@ -11,7 +14,32 @@ GridView::GridView(QWidget *parent)
     m_layout = new QGridLayout(this);
     m_layout->setContentsMargins(2, 2, 2, 2);
     m_layout->setSpacing(2);
+
+    setMouseTracking(true);
+    qApp->installEventFilter(this);
+    m_cursorTimer = new QTimer(this);
+    m_cursorTimer->setSingleShot(true);
+    m_cursorTimer->setInterval(2500);
+    connect(m_cursorTimer, &QTimer::timeout, this, [this] {
+        if (!m_fullscreenMode) {
+            return;
+        }
+        if (!m_cursorHidden) {
+            qApp->setOverrideCursor(Qt::BlankCursor);
+            m_cursorHidden = true;
+        }
+        for (VideoTile *tile : m_tiles) {
+            tile->hideControls();
+        }
+    });
     rebuild();
+}
+
+GridView::~GridView()
+{
+    if (m_cursorHidden) {
+        qApp->restoreOverrideCursor();
+    }
 }
 
 void GridView::setGridSize(int rows, int columns)
@@ -135,12 +163,26 @@ void GridView::assignCameraToIndex(const QString &cameraId, int index)
 
 void GridView::setFullscreenMode(bool fullscreen)
 {
+    m_fullscreenMode = fullscreen;
     const int margin = fullscreen ? 0 : 2;
     const int spacing = fullscreen ? 1 : 2;
     m_layout->setContentsMargins(margin, margin, margin, margin);
     m_layout->setSpacing(spacing);
     for (VideoTile *tile : m_tiles) {
         tile->setFullscreenMode(fullscreen);
+    }
+    if (fullscreen) {
+        if (m_cursorHidden) {
+            qApp->restoreOverrideCursor();
+            m_cursorHidden = false;
+        }
+        m_cursorTimer->start();
+    } else {
+        m_cursorTimer->stop();
+        if (m_cursorHidden) {
+            qApp->restoreOverrideCursor();
+            m_cursorHidden = false;
+        }
     }
 }
 
@@ -167,6 +209,22 @@ void GridView::clearSelected()
     m_assignments[m_selectedIndex].clear();
     m_tiles.at(m_selectedIndex)->stop();
     emit assignmentsChanged();
+}
+
+bool GridView::eventFilter(QObject *watched, QEvent *event)
+{
+    Q_UNUSED(watched)
+    if (m_fullscreenMode &&
+        (event->type() == QEvent::MouseMove ||
+         event->type() == QEvent::MouseButtonPress ||
+         event->type() == QEvent::Wheel)) {
+        if (m_cursorHidden) {
+            qApp->restoreOverrideCursor();
+            m_cursorHidden = false;
+        }
+        m_cursorTimer->start();
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 Camera GridView::findCamera(const QString &id) const
@@ -224,6 +282,16 @@ void GridView::rebuild()
         });
         connect(tile, &VideoTile::cameraDropped,
                 this, &GridView::assignCameraToIndex);
+        connect(tile, &VideoTile::streamSubtypeChanged,
+                this, [this](const QString &cameraId, int subtype) {
+                    for (Camera &camera : m_cameras) {
+                        if (camera.id == cameraId) {
+                            camera.subtype = subtype;
+                            break;
+                        }
+                    }
+                    emit cameraStreamChanged(cameraId, subtype);
+                });
         connect(tile, &VideoTile::exitFullscreenRequested,
                 this, &GridView::exitFullscreenRequested);
         connect(tile, &VideoTile::playbackError, this,

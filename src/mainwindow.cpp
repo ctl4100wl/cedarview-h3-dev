@@ -258,6 +258,8 @@ MainWindow::MainWindow(bool startFullscreen, QWidget *parent)
             });
     connect(m_grid, &GridView::playbackError,
             this, &MainWindow::showPlaybackError);
+    connect(m_grid, &GridView::cameraStreamChanged,
+            this, &MainWindow::saveCameraStreamPreference);
     connect(m_grid, &GridView::exitFullscreenRequested,
             this, [this] {
                 if (isFullScreen()) {
@@ -515,6 +517,19 @@ void MainWindow::showPlaybackError(const QString &camera,
     statusBar()->showMessage(tr("%1: %2").arg(camera, message), 8000);
 }
 
+void MainWindow::saveCameraStreamPreference(const QString &cameraId,
+                                            int subtype)
+{
+    for (Camera &camera : m_state.cameras) {
+        if (camera.id == cameraId) {
+            camera.subtype = qBound(0, subtype, 1);
+            saveState();
+            updateAssignmentIndicators();
+            return;
+        }
+    }
+}
+
 void MainWindow::refreshCameraList()
 {
     m_cameraList->clear();
@@ -656,13 +671,14 @@ void MainWindow::updateAssignmentIndicators()
             }
         }
         item->setText(positions.isEmpty()
-                          ? cameraName
-                          : tr("%1  •  Tile %2")
+                          ? tr("▷  %1").arg(cameraName)
+                          : tr("●  %1  •  Tile %2")
                                 .arg(cameraName, positions.join(
                                     QStringLiteral(", "))));
         item->setToolTip(positions.isEmpty()
-                             ? tr("Not currently shown")
-                             : tr("Currently shown in tile %1")
+                             ? tr("Double-click to show in the selected tile")
+                             : tr("Currently shown in tile %1. Drag it or "
+                                  "double-click to move it.")
                                    .arg(positions.join(QStringLiteral(", "))));
         item->setForeground(QBrush(textColor));
     }
@@ -704,6 +720,13 @@ void MainWindow::applyStyle()
         }
         QWidget#sidebar {
             background: #171b21;
+        }
+        QWidget#videoTile {
+            background: #080a0d;
+            border: 1px solid #252a32;
+        }
+        QWidget#videoTile[selected="true"] {
+            border: 2px solid #ff8a1f;
         }
         QLabel#sidebarHeading {
             background: transparent;
@@ -770,6 +793,13 @@ void MainWindow::applyStyle()
         }
         QWidget#sidebar {
             background: #f8fafc;
+        }
+        QWidget#videoTile {
+            background: #080a0d;
+            border: 1px solid #d4d9e1;
+        }
+        QWidget#videoTile[selected="true"] {
+            border: 2px solid #ff7a1a;
         }
         QLabel#sidebarHeading {
             background: transparent;

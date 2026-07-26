@@ -37,6 +37,7 @@ private slots:
     void toggleTheme();
     void showDeveloperSettings();
     void showPlaybackError(const QString &camera, const QString &message);
+    void saveCameraStreamPreference(const QString &cameraId, int subtype);
 
 private:
     int currentCameraIndex() const;

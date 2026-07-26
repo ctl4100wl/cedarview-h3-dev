@@ -22,6 +22,12 @@ application code, cloud APIs, logos, or proprietary assets.
 - Frameless rectangular video wall with no camera-name bezels
 - Cached camera snapshots in the sidebar, refreshed sequentially at startup
 - Drag cameras from the sidebar directly onto a grid tile
+- Drag a playing feed onto another tile to swap their positions
+- Imou-style hover controls that disappear after mouse inactivity
+- Per-feed Pause/Resume, immediate reconnect, Close, and Main/Sub switching
+- Main/Sub changes persist as the camera's preferred stream
+- Automatic reconnect after stream failure with 2–15 second capped backoff
+- Fullscreen idle mode hides both tile overlays and the mouse cursor
 - Occupancy-aware camera moves: dragging an already shown camera to another
   tile swaps the two tile assignments instead of duplicating the stream
 - Sidebar tile-position indicators
@@ -147,8 +153,24 @@ mpv to refresh one camera thumbnail at a time. This avoids launching a burst of
 extra decoders on the H3. Drag a snapshot from the sidebar onto any tile to
 place or replace that feed. If the camera is already on the wall, CedarView
 moves it to the new tile and moves the displaced camera back to the old tile.
-The sidebar shows each camera's current tile number. Right-click a feed and
-select **Clear tile** to remove its assignment.
+The sidebar shows each camera's current tile number. You can also drag a live
+tile directly onto another live tile to swap them.
+
+Move the pointer over a feed to reveal its compact overlay:
+
+- **Ⅱ / ▶** pauses or resumes only that feed
+- **MAIN / SUB** switches `subtype=0` and `subtype=1` immediately
+- **↻** reconnects immediately
+- **×** closes the feed and clears its tile
+
+The overlay disappears after 2.2 seconds without movement. In fullscreen the
+mouse cursor also disappears after 2.5 seconds and returns on the next mouse
+movement. Right-click exposes the same controls plus **Exit fullscreen**.
+
+When mpv exits, GStreamer reports an error, or RTSP reaches end-of-stream,
+CedarView does not leave the feed stuck at Offline. It retries forever with a
+backoff of 2, 4, 8, then 15 seconds (capped at 15 seconds). Pause and Close
+cancel retrying; Resume and Reconnect now restart immediately.
 
 Choose **Auto — use camera count** to recalculate the wall whenever cameras are
 added or removed. Camera-count presets use balanced rows and center an
