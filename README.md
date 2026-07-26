@@ -23,7 +23,8 @@ application code, cloud APIs, logos, or proprietary assets.
 - Cached camera snapshots in the sidebar, refreshed sequentially at startup
 - Drag cameras from the sidebar directly onto a grid tile
 - Drag a playing feed onto another tile to swap their positions
-- Imou-style hover controls that disappear after mouse inactivity
+- Imou-style compact hover controls that disappear after mouse inactivity
+- X11-safe floating control badges with no full-tile transparent widget
 - Per-feed Pause/Resume, immediate reconnect, Close, and Main/Sub switching
 - Main/Sub changes persist as the camera's preferred stream
 - Automatic reconnect after stream failure with 2–15 second capped backoff

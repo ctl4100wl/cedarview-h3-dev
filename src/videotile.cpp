@@ -13,7 +13,7 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QProcess>
-#include <QStackedLayout>
+#include <QResizeEvent>
 #include <QStyle>
 #include <QTimer>
 #include <QToolButton>
@@ -52,6 +52,9 @@ QToolButton *makeOverlayButton(const QString &text, const QString &tooltip,
                                QWidget *parent)
 {
     auto *button = new QToolButton(parent);
+    // mpv/xv renders into a native X11 child window. Overlay controls must
+    // also be native siblings or the video window will cover them.
+    button->setAttribute(Qt::WA_NativeWindow);
     button->setText(text);
     button->setToolTip(tooltip);
     button->setAutoRaise(true);
@@ -97,35 +100,34 @@ VideoTile::VideoTile(int index, QWidget *parent)
     m_statusLabel = new QLabel(tr("Drop a camera here"), this);
     m_statusLabel->setAlignment(Qt::AlignCenter);
     m_statusLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_statusLabel->setAttribute(Qt::WA_NativeWindow);
 
-    m_controls = new QWidget(this);
-    m_controls->setObjectName(QStringLiteral("tileControls"));
-    m_controls->setMouseTracking(true);
-    m_controls->setAcceptDrops(true);
-    m_controls->installEventFilter(this);
-    m_controls->setStyleSheet(QStringLiteral(
-        "QWidget#tileControls { background: transparent; }"));
-
-    m_cameraNameLabel = new QLabel(m_controls);
+    // Do not place a transparent widget across the whole video. A native
+    // mpv/XVideo child window cannot be alpha-composited through a regular
+    // Qt widget on X11, and the "transparent" center becomes a black box.
+    // Every badge/button is instead a small native sibling over the video.
+    m_cameraNameLabel = new QLabel(this);
+    m_cameraNameLabel->setAttribute(Qt::WA_NativeWindow);
     m_cameraNameLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_cameraNameLabel->setStyleSheet(QStringLiteral(
-        "color: white; background: rgba(8,10,13,175); border-radius: 4px; "
+        "color: white; background: #20242b; border-radius: 4px; "
         "padding: 4px 7px; font-weight: 700;"));
-    m_connectionLabel = new QLabel(m_controls);
+    m_connectionLabel = new QLabel(this);
+    m_connectionLabel->setAttribute(Qt::WA_NativeWindow);
     m_connectionLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_connectionLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_connectionLabel->setStyleSheet(QStringLiteral(
-        "color: #e5e7eb; background: rgba(8,10,13,155); "
+        "color: #e5e7eb; background: #20242b; "
         "border-radius: 4px; padding: 4px 7px;"));
 
     m_pauseButton = makeOverlayButton(
-        QStringLiteral("Ⅱ"), tr("Pause this feed"), m_controls);
+        QStringLiteral("Ⅱ"), tr("Pause this feed"), this);
     m_streamButton = makeOverlayButton(
-        tr("SUB"), tr("Switch between Main and Sub stream"), m_controls);
+        tr("SUB"), tr("Switch between Main and Sub stream"), this);
     m_retryButton = makeOverlayButton(
-        QStringLiteral("↻"), tr("Reconnect now"), m_controls);
+        QStringLiteral("↻"), tr("Reconnect now"), this);
     m_closeButton = makeOverlayButton(
-        QStringLiteral("×"), tr("Close this feed"), m_controls);
+        QStringLiteral("×"), tr("Close this feed"), this);
 
     connect(m_pauseButton, &QToolButton::clicked, this, [this] {
         if (m_paused) {
@@ -146,33 +148,9 @@ VideoTile::VideoTile(int index, QWidget *parent)
         emit cleared(m_index);
     });
 
-    auto *topRow = new QHBoxLayout;
-    topRow->setContentsMargins(0, 0, 0, 0);
-    topRow->addWidget(m_cameraNameLabel);
-    topRow->addStretch(1);
-    topRow->addWidget(m_connectionLabel);
-    topRow->addWidget(m_closeButton);
-
-    auto *bottomRow = new QHBoxLayout;
-    bottomRow->setContentsMargins(0, 0, 0, 0);
-    bottomRow->addStretch(1);
-    bottomRow->addWidget(m_pauseButton);
-    bottomRow->addWidget(m_streamButton);
-    bottomRow->addWidget(m_retryButton);
-
-    auto *controlsLayout = new QVBoxLayout(m_controls);
-    controlsLayout->setContentsMargins(8, 8, 8, 8);
-    controlsLayout->setSpacing(4);
-    controlsLayout->addLayout(topRow);
-    controlsLayout->addStretch(1);
-    controlsLayout->addLayout(bottomRow);
-
-    auto *layout = new QStackedLayout(this);
-    layout->setStackingMode(QStackedLayout::StackAll);
+    auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(m_videoSurface);
-    layout->addWidget(m_statusLabel);
-    layout->addWidget(m_controls);
 
     m_controlsTimer = new QTimer(this);
     m_controlsTimer->setSingleShot(true);
@@ -755,7 +733,7 @@ void VideoTile::dropEvent(QDropEvent *event)
 
 bool VideoTile::eventFilter(QObject *watched, QEvent *event)
 {
-    if (watched == m_videoSurface || watched == m_controls) {
+    if (watched == m_videoSurface) {
         if (event->type() == QEvent::DragEnter) {
             dragEnterEvent(static_cast<QDragEnterEvent *>(event));
             return event->isAccepted();
@@ -765,21 +743,7 @@ bool VideoTile::eventFilter(QObject *watched, QEvent *event)
             return event->isAccepted();
         }
     }
-    if (watched == m_controls) {
-        if (event->type() == QEvent::MouseButtonPress) {
-            mousePressEvent(static_cast<QMouseEvent *>(event));
-            return true;
-        }
-        if (event->type() == QEvent::MouseMove) {
-            mouseMoveEvent(static_cast<QMouseEvent *>(event));
-            return true;
-        }
-        if (event->type() == QEvent::MouseButtonRelease) {
-            mouseReleaseEvent(static_cast<QMouseEvent *>(event));
-            return true;
-        }
-    }
-    if (watched == m_videoSurface || watched == m_controls) {
+    if (watched == m_videoSurface) {
         if (event->type() == QEvent::Enter ||
             event->type() == QEvent::MouseMove) {
             showControls();
@@ -842,16 +806,14 @@ void VideoTile::showControls()
     if (!hasCamera()) {
         return;
     }
-    m_controls->show();
-    m_controls->raise();
+    setControlsVisible(true);
+    positionOverlayWidgets();
     m_controlsTimer->start();
 }
 
 void VideoTile::hideControls()
 {
-    if (m_controls) {
-        m_controls->hide();
-    }
+    setControlsVisible(false);
 }
 
 void VideoTile::updateOverlay()
@@ -882,8 +844,9 @@ void VideoTile::updateOverlay()
                 m_camera.subtype == 0 ? tr("Main") : tr("Sub")));
     }
     if (!occupied) {
-        m_controls->hide();
+        setControlsVisible(false);
     }
+    positionOverlayWidgets();
 }
 
 void VideoTile::setStatus(const QString &text, bool error)
@@ -894,11 +857,98 @@ void VideoTile::setStatus(const QString &text, bool error)
     m_statusLabel->setVisible(shouldShow);
     m_statusLabel->setStyleSheet(error
         ? QStringLiteral(
-              "background: rgba(8, 10, 13, 190); color: #ff8a8a; "
-              "padding: 8px;")
+              "background: #24191c; color: #ff8a8a; "
+              "border-radius: 5px; padding: 8px 12px;")
         : QStringLiteral(
-              "background: rgba(8, 10, 13, 175); color: #d1d5db; "
-              "padding: 8px;"));
+              "background: #20242b; color: #d1d5db; "
+              "border-radius: 5px; padding: 8px 12px;"));
+    positionOverlayWidgets();
+}
+
+void VideoTile::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    positionOverlayWidgets();
+}
+
+void VideoTile::setControlsVisible(bool visible)
+{
+    for (QWidget *widget : {
+             static_cast<QWidget *>(m_cameraNameLabel),
+             static_cast<QWidget *>(m_connectionLabel),
+             static_cast<QWidget *>(m_pauseButton),
+             static_cast<QWidget *>(m_streamButton),
+             static_cast<QWidget *>(m_retryButton),
+             static_cast<QWidget *>(m_closeButton)}) {
+        if (widget) {
+            widget->setVisible(visible);
+            if (visible) {
+                widget->raise();
+            }
+        }
+    }
+    if (m_statusLabel && m_statusLabel->isVisible()) {
+        m_statusLabel->raise();
+    }
+}
+
+void VideoTile::positionOverlayWidgets()
+{
+    constexpr int margin = 8;
+    constexpr int gap = 4;
+
+    for (QWidget *widget : {
+             static_cast<QWidget *>(m_cameraNameLabel),
+             static_cast<QWidget *>(m_connectionLabel),
+             static_cast<QWidget *>(m_pauseButton),
+             static_cast<QWidget *>(m_streamButton),
+             static_cast<QWidget *>(m_retryButton),
+             static_cast<QWidget *>(m_closeButton),
+             static_cast<QWidget *>(m_statusLabel)}) {
+        if (widget) {
+            widget->adjustSize();
+        }
+    }
+
+    if (m_cameraNameLabel) {
+        m_cameraNameLabel->move(margin, margin);
+    }
+
+    int topRight = width() - margin;
+    if (m_closeButton) {
+        topRight -= m_closeButton->width();
+        m_closeButton->move(topRight, margin);
+        topRight -= gap;
+    }
+    if (m_connectionLabel) {
+        topRight -= m_connectionLabel->width();
+        m_connectionLabel->move(qMax(margin, topRight), margin);
+    }
+
+    int bottomRight = width() - margin;
+    const int bottom = height() - margin;
+    for (QWidget *widget : {
+             static_cast<QWidget *>(m_retryButton),
+             static_cast<QWidget *>(m_streamButton),
+             static_cast<QWidget *>(m_pauseButton)}) {
+        if (!widget) {
+            continue;
+        }
+        bottomRight -= widget->width();
+        widget->move(bottomRight, bottom - widget->height());
+        bottomRight -= gap;
+    }
+
+    if (m_statusLabel) {
+        const int statusX = qMax(
+            margin, (width() - m_statusLabel->width()) / 2);
+        const int statusY = qMax(
+            margin, (height() - m_statusLabel->height()) / 2);
+        m_statusLabel->move(statusX, statusY);
+        if (m_statusLabel->isVisible()) {
+            m_statusLabel->raise();
+        }
+    }
 }
 
 void VideoTile::releasePlayer(bool immediate)

@@ -14,6 +14,7 @@ class QProcess;
 class QToolButton;
 class QTimer;
 class QWidget;
+class QResizeEvent;
 
 class VideoTile final : public QWidget
 {
@@ -57,6 +58,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void enterEvent(QEnterEvent *event) override;
     void leaveEvent(QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     QStringList playerArguments() const;
@@ -76,6 +78,8 @@ private:
     void startPlayback();
     void markLive();
     void setStatus(const QString &text, bool error = false);
+    void positionOverlayWidgets();
+    void setControlsVisible(bool visible);
     void releasePlayer(bool immediate = false);
     void releaseGStreamer();
 
@@ -88,7 +92,6 @@ private:
     QByteArray m_playerOutput;
     QWidget *m_videoSurface = nullptr;
     QLabel *m_statusLabel = nullptr;
-    QWidget *m_controls = nullptr;
     QLabel *m_cameraNameLabel = nullptr;
     QLabel *m_connectionLabel = nullptr;
     QToolButton *m_pauseButton = nullptr;
