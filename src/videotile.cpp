@@ -2,17 +2,24 @@
 
 #include <QApplication>
 #include <QContextMenuEvent>
+#include <QCoreApplication>
+#include <QDateTime>
 #include <QDrag>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QEnterEvent>
 #include <QEvent>
+#include <QFile>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLocalSocket>
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QProcess>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QResizeEvent>
 #include <QStyle>
 #include <QTimer>
@@ -27,6 +34,7 @@ namespace {
 constexpr auto CameraMimeType = "application/x-cedarview-camera-id";
 constexpr int ControlsTimeoutMs = 2200;
 constexpr int MaximumReconnectDelayMs = 15000;
+constexpr int PlaybackClockPollMs = 2000;
 
 class AspectRatioSurface final : public QWidget
 {
@@ -166,6 +174,11 @@ VideoTile::VideoTile(int index, QWidget *parent)
         }
     });
 
+    m_syncTimer = new QTimer(this);
+    m_syncTimer->setInterval(PlaybackClockPollMs);
+    connect(m_syncTimer, &QTimer::timeout,
+            this, &VideoTile::pollPlaybackClock);
+
     m_busTimer = new QTimer(this);
     m_busTimer->setInterval(120);
     connect(m_busTimer, &QTimer::timeout,
@@ -178,6 +191,7 @@ VideoTile::VideoTile(int index, QWidget *parent)
 VideoTile::~VideoTile()
 {
     m_stopping = true;
+    resetPlaybackClock();
     releaseGStreamer();
     releasePlayer(true);
 }
@@ -203,6 +217,8 @@ void VideoTile::play(const Camera &camera)
     m_live = false;
     m_retryAttempt = 0;
     m_playerOutput.clear();
+    m_cameraClockKnown = false;
+    resetPlaybackClock();
     m_stopping = false;
     updateOverlay();
     startPlayback();
@@ -219,6 +235,7 @@ void VideoTile::startPlayback()
     m_stopping = false;
     m_live = false;
     m_playerOutput.clear();
+    resetPlaybackClock();
     updateOverlay();
     if (m_playbackBackend == QStringLiteral("gstreamer")) {
         playGStreamer();
@@ -230,6 +247,11 @@ void VideoTile::startPlayback()
 void VideoTile::playMpv()
 {
     setStatus(tr("Connecting…"));
+    m_ipcPath = QStringLiteral("/tmp/cedarview-mpv-%1-%2.sock")
+                    .arg(QCoreApplication::applicationPid())
+                    .arg(m_index);
+    QFile::remove(m_ipcPath);
+
     auto *player = new QProcess(this);
     m_player = player;
     player->setProcessChannelMode(QProcess::MergedChannels);
@@ -246,6 +268,9 @@ void VideoTile::playMpv()
             if (m_player == player &&
                 player->state() == QProcess::Running) {
                 markLive();
+                if (m_playbackSyncEnabled) {
+                    m_syncTimer->start();
+                }
             }
         });
     });
@@ -490,6 +515,10 @@ QStringList VideoTile::playerArguments() const
         QStringLiteral("--rtsp-transport=%1").arg(m_camera.transport),
         QStringLiteral("--msg-level=all=warn"),
     };
+    if (m_playbackSyncEnabled && !m_ipcPath.isEmpty()) {
+        arguments.append(
+            QStringLiteral("--input-ipc-server=%1").arg(m_ipcPath));
+    }
 
     arguments.append(
         m_camera.displayMode == QStringLiteral("fit")
@@ -527,6 +556,171 @@ void VideoTile::collectPlayerOutput()
     constexpr qsizetype MaxLogBytes = 4096;
     if (m_playerOutput.size() > MaxLogBytes) {
         m_playerOutput = m_playerOutput.right(MaxLogBytes);
+    }
+}
+
+void VideoTile::pollPlaybackClock()
+{
+    if (!m_playbackSyncEnabled ||
+        m_playbackBackend != QStringLiteral("mpv") ||
+        !m_player || m_player->state() != QProcess::Running ||
+        m_paused || !m_live || m_ipcPath.isEmpty()) {
+        return;
+    }
+
+    if (!m_ipcSocket) {
+        auto *socket = new QLocalSocket(this);
+        m_ipcSocket = socket;
+        connect(socket, &QLocalSocket::readyRead,
+                this, &VideoTile::readMpvIpc);
+        connect(socket, &QLocalSocket::disconnected,
+                this, [this, socket] {
+                    if (m_ipcSocket == socket) {
+                        m_ipcSocket = nullptr;
+                    }
+                    if (socket) {
+                        socket->deleteLater();
+                    }
+                });
+    }
+
+    if (m_ipcSocket->state() == QLocalSocket::UnconnectedState) {
+        m_ipcSocket->connectToServer(m_ipcPath, QIODevice::ReadWrite);
+        return;
+    }
+    if (m_ipcSocket->state() != QLocalSocket::ConnectedState) {
+        return;
+    }
+
+    const QByteArray mediaRequest =
+        QByteArrayLiteral(
+            "{\"command\":[\"get_property\",\"time-pos\"],"
+            "\"request_id\":3201}\n");
+    const QByteArray cacheRequest =
+        QByteArrayLiteral(
+            "{\"command\":[\"get_property\",\"demuxer-cache-time\"],"
+            "\"request_id\":3202}\n");
+    m_ipcSocket->write(cacheRequest);
+    // mpv processes IPC commands in order. Read the current live edge first
+    // so the following playhead sample is compared with the same poll cycle.
+    m_ipcSocket->write(mediaRequest);
+    m_ipcSocket->flush();
+}
+
+void VideoTile::readMpvIpc()
+{
+    if (!m_ipcSocket) {
+        return;
+    }
+    m_ipcBuffer.append(m_ipcSocket->readAll());
+    while (true) {
+        const qsizetype newline = m_ipcBuffer.indexOf('\n');
+        if (newline < 0) {
+            break;
+        }
+        const QByteArray line = m_ipcBuffer.left(newline).trimmed();
+        m_ipcBuffer.remove(0, newline + 1);
+        if (line.isEmpty()) {
+            continue;
+        }
+        const QJsonDocument document = QJsonDocument::fromJson(line);
+        if (!document.isObject()) {
+            continue;
+        }
+        const QJsonObject object = document.object();
+        if (object.value(QStringLiteral("error")).toString() !=
+            QStringLiteral("success")) {
+            continue;
+        }
+        const int requestId =
+            object.value(QStringLiteral("request_id")).toInt();
+        const QJsonValue data = object.value(QStringLiteral("data"));
+        if (!data.isDouble()) {
+            continue;
+        }
+        if (requestId == 3202) {
+            m_cacheEndTime = data.toDouble();
+        } else if (requestId == 3201) {
+            evaluatePlaybackClock(data.toDouble());
+        }
+    }
+}
+
+void VideoTile::evaluatePlaybackClock(double mediaTime)
+{
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (m_lastMediaTime < 0.0 || m_lastClockSampleMs <= 0 ||
+        mediaTime < m_lastMediaTime) {
+        m_lastMediaTime = mediaTime;
+        m_lastClockSampleMs = nowMs;
+        m_syncDebtSeconds = 0.0;
+        m_syncViolationCount = 0;
+        return;
+    }
+
+    const double wallElapsed =
+        static_cast<double>(nowMs - m_lastClockSampleMs) / 1000.0;
+    const double mediaElapsed = mediaTime - m_lastMediaTime;
+    if (wallElapsed <= 0.0 || wallElapsed > 10.0) {
+        m_lastMediaTime = mediaTime;
+        m_lastClockSampleMs = nowMs;
+        return;
+    }
+
+    // A live stream should advance by the same amount as Linux time. Debt
+    // accumulates while playback stalls and falls again if the player catches
+    // up. The cache-to-playhead gap detects a player that is decoding normally
+    // but has drifted behind the RTSP live edge.
+    m_syncDebtSeconds = qMax(
+        0.0, m_syncDebtSeconds + wallElapsed - mediaElapsed);
+    const double liveEdgeLag =
+        m_cacheEndTime >= mediaTime
+            ? m_cacheEndTime - mediaTime
+            : 0.0;
+    const double measuredLag = qMax(m_syncDebtSeconds, liveEdgeLag);
+    const double thresholdSeconds =
+        static_cast<double>(m_playbackSyncThresholdMs) / 1000.0;
+
+    if (measuredLag > thresholdSeconds) {
+        ++m_syncViolationCount;
+    } else {
+        m_syncViolationCount = 0;
+    }
+
+    m_lastMediaTime = mediaTime;
+    m_lastClockSampleMs = nowMs;
+    if (m_syncViolationCount < 2) {
+        return;
+    }
+
+    const QString cameraName = m_camera.name;
+    setStatus(tr("Resyncing • %1 s behind")
+                  .arg(measuredLag, 0, 'f', 1));
+    emit playbackResynced(m_index, cameraName, measuredLag);
+    reconnectNow();
+}
+
+void VideoTile::resetPlaybackClock()
+{
+    if (m_syncTimer) {
+        m_syncTimer->stop();
+    }
+    if (m_ipcSocket) {
+        QLocalSocket *socket = m_ipcSocket;
+        m_ipcSocket = nullptr;
+        socket->disconnect(this);
+        socket->abort();
+        socket->deleteLater();
+    }
+    m_ipcBuffer.clear();
+    m_lastMediaTime = -1.0;
+    m_cacheEndTime = -1.0;
+    m_lastClockSampleMs = 0;
+    m_syncDebtSeconds = 0.0;
+    m_syncViolationCount = 0;
+    if (!m_ipcPath.isEmpty()) {
+        QFile::remove(m_ipcPath);
+        m_ipcPath.clear();
     }
 }
 
@@ -593,6 +787,7 @@ void VideoTile::stop()
     m_stopping = true;
     m_reconnectTimer->stop();
     m_controlsTimer->stop();
+    resetPlaybackClock();
     releaseGStreamer();
     releasePlayer();
     m_camera = Camera{};
@@ -636,6 +831,27 @@ void VideoTile::markLive()
     m_live = true;
     m_retryAttempt = 0;
     setStatus(tr("Live"));
+    updateOverlay();
+}
+
+void VideoTile::setPlaybackSync(bool enabled, int thresholdMs)
+{
+    const bool changed = enabled != m_playbackSyncEnabled;
+    m_playbackSyncEnabled = enabled;
+    m_playbackSyncThresholdMs = qBound(1000, thresholdMs, 15000);
+    if (!m_playbackSyncEnabled) {
+        resetPlaybackClock();
+    } else if (changed && hasCamera() && !m_paused &&
+               m_playbackBackend == QStringLiteral("mpv")) {
+        // mpv creates its IPC socket only at launch.
+        reconnectNow();
+    }
+}
+
+void VideoTile::setCameraClockOffset(qint64 offsetMs)
+{
+    m_cameraClockOffsetMs = offsetMs;
+    m_cameraClockKnown = true;
     updateOverlay();
 }
 
@@ -835,9 +1051,19 @@ void VideoTile::updateOverlay()
     if (m_paused) {
         m_connectionLabel->setText(tr("Paused"));
     } else if (m_live) {
-        m_connectionLabel->setText(
-            tr("Live • %1").arg(
-                m_camera.subtype == 0 ? tr("Main") : tr("Sub")));
+        QString text = tr("Live • %1").arg(
+            m_camera.subtype == 0 ? tr("Main") : tr("Sub"));
+        if (m_cameraClockKnown &&
+            qAbs(m_cameraClockOffsetMs) >= 1000) {
+            const double seconds =
+                static_cast<double>(m_cameraClockOffsetMs) / 1000.0;
+            text += tr(" • Clock %1%2 s")
+                        .arg(seconds >= 0.0
+                                 ? QStringLiteral("+")
+                                 : QString())
+                        .arg(seconds, 0, 'f', 1);
+        }
+        m_connectionLabel->setText(text);
     } else if (occupied && !m_reconnectTimer->isActive()) {
         m_connectionLabel->setText(
             tr("Connecting • %1").arg(
@@ -953,6 +1179,7 @@ void VideoTile::positionOverlayWidgets()
 
 void VideoTile::releasePlayer(bool immediate)
 {
+    resetPlaybackClock();
     if (!m_player) {
         return;
     }

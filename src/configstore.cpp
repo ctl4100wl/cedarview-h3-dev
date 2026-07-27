@@ -54,6 +54,19 @@ AppState ConfigStore::load()
     if (state.playbackBackend != QStringLiteral("gstreamer")) {
         state.playbackBackend = QStringLiteral("mpv");
     }
+    state.playbackSyncEnabled =
+        root.value(QStringLiteral("playbackSyncEnabled")).toBool(true);
+    state.playbackSyncThresholdMs = qBound(
+        1000,
+        root.value(QStringLiteral("playbackSyncThresholdMs")).toInt(2500),
+        15000);
+    state.onvifClockCheckEnabled =
+        root.value(QStringLiteral("onvifClockCheckEnabled")).toBool(true);
+    state.onvifClockCheckIntervalSeconds = qBound(
+        15,
+        root.value(QStringLiteral("onvifClockCheckIntervalSeconds"))
+            .toInt(60),
+        3600);
     const QJsonArray cameras = root.value(QStringLiteral("cameras")).toArray();
     for (const QJsonValue &value : cameras) {
         if (value.isObject()) {
@@ -94,7 +107,7 @@ bool ConfigStore::save(const AppState &state, QString *error)
     }
 
     const QJsonObject root{
-        {QStringLiteral("version"), 4},
+        {QStringLiteral("version"), 5},
         {QStringLiteral("gridRows"), state.gridRows},
         {QStringLiteral("gridColumns"), state.gridColumns},
         {QStringLiteral("gridMode"), state.gridMode},
@@ -102,6 +115,14 @@ bool ConfigStore::save(const AppState &state, QString *error)
         {QStringLiteral("defaultPassword"), state.defaultPassword},
         {QStringLiteral("theme"), state.theme},
         {QStringLiteral("playbackBackend"), state.playbackBackend},
+        {QStringLiteral("playbackSyncEnabled"),
+         state.playbackSyncEnabled},
+        {QStringLiteral("playbackSyncThresholdMs"),
+         state.playbackSyncThresholdMs},
+        {QStringLiteral("onvifClockCheckEnabled"),
+         state.onvifClockCheckEnabled},
+        {QStringLiteral("onvifClockCheckIntervalSeconds"),
+         state.onvifClockCheckIntervalSeconds},
         {QStringLiteral("cameras"), cameras},
         {QStringLiteral("assignments"), assignments},
     };

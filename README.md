@@ -28,6 +28,9 @@ application code, cloud APIs, logos, or proprietary assets.
 - Per-feed Pause/Resume, immediate reconnect, Close, and Main/Sub switching
 - Main/Sub changes persist as the camera's preferred stream
 - Automatic reconnect after stream failure with 2–15 second capped backoff
+- MPV live-sync watchdog that compares playback progress and buffered live
+  edge against Linux time, then refreshes only a lagging feed
+- ONVIF camera-clock checks through the standard Imou port 80 device service
 - Fullscreen idle mode hides both tile overlays and the mouse cursor
 - Occupancy-aware camera moves: dragging an already shown camera to another
   tile swaps the two tile assignments instead of duplicating the stream
@@ -68,6 +71,31 @@ it restarts active tiles immediately:
 - **GStreamer / Cedrus** prefers `v4l2slh264dec` or `v4l2slh265dec`
   automatically after inspecting the stream codec. It uses `xvimagesink` with
   `ximagesink` fallback and embeds each sink in its Qt tile.
+
+The same dialog controls **Live feed sync**. In MPV mode, every tile exposes a
+private local JSON IPC socket. CedarView samples `time-pos` and
+`demuxer-cache-time` every two seconds:
+
+- media progress is compared with elapsed Linux system time
+- the playhead is compared with mpv's buffered RTSP live edge
+- two consecutive readings must exceed the configured threshold
+- only the lagging tile is restarted; other feeds keep playing
+
+The default threshold is 2.5 seconds. This avoids refreshing a feed because of
+one momentary network or decode hiccup.
+
+RTSP/RTP timestamps are normally relative media counters, not an absolute
+camera wall clock. CedarView therefore checks the camera clock separately with
+ONVIF `GetSystemDateAndTime` at:
+
+```text
+http://CAMERA_IP:80/onvif/device_service
+```
+
+That offset is shown in the tile's hover status when it exceeds one second.
+A camera-clock mismatch is informational: refreshing RTSP cannot correct the
+camera's own clock. The sync watchdog refreshes only when playback itself has
+fallen behind.
 
 Install or verify both backend stacks independently with:
 
@@ -243,7 +271,7 @@ output tries XVideo first and plain X11 second, avoiding the blank
 
 ## PTZ
 
-The target Imou cameras are ONVIF-compatible, so the planned PTZ module does
+The target Imou cameras are ONVIF-compatible on HTTP port 80, so the planned PTZ module does
 not need a reverse-engineered Imou cloud protocol. It can use ONVIF to:
 
 - discover cameras

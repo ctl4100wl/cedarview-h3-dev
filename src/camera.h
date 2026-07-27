@@ -13,6 +13,7 @@ struct Camera
     QString host;
     QString username;
     QString password;
+    int onvifPort = 80;
     int channel = 1;
     int subtype = 1;
     int latencyMs = 300;
@@ -56,6 +57,7 @@ struct Camera
             {QStringLiteral("host"), host},
             {QStringLiteral("username"), username},
             {QStringLiteral("password"), password},
+            {QStringLiteral("onvifPort"), onvifPort},
             {QStringLiteral("channel"), channel},
             {QStringLiteral("subtype"), subtype},
             {QStringLiteral("latencyMs"), latencyMs},
@@ -73,6 +75,9 @@ struct Camera
         camera.host = object.value(QStringLiteral("host")).toString();
         camera.username = object.value(QStringLiteral("username")).toString();
         camera.password = object.value(QStringLiteral("password")).toString();
+        camera.onvifPort =
+            qBound(1, object.value(QStringLiteral("onvifPort")).toInt(80),
+                   65535);
         camera.channel = object.value(QStringLiteral("channel")).toInt(1);
         camera.subtype = object.value(QStringLiteral("subtype")).toInt(1);
         camera.latencyMs = object.value(QStringLiteral("latencyMs")).toInt(300);

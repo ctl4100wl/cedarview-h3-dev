@@ -200,6 +200,26 @@ void GridView::setPlaybackBackend(const QString &backend)
     }
 }
 
+void GridView::setPlaybackSync(bool enabled, int thresholdMs)
+{
+    m_playbackSyncEnabled = enabled;
+    m_playbackSyncThresholdMs = qBound(1000, thresholdMs, 15000);
+    for (VideoTile *tile : m_tiles) {
+        tile->setPlaybackSync(
+            m_playbackSyncEnabled, m_playbackSyncThresholdMs);
+    }
+}
+
+void GridView::setCameraClockOffset(const QString &cameraId,
+                                    qint64 offsetMs)
+{
+    for (VideoTile *tile : m_tiles) {
+        if (tile->cameraId() == cameraId) {
+            tile->setCameraClockOffset(offsetMs);
+        }
+    }
+}
+
 void GridView::clearSelected()
 {
     if (m_selectedIndex < 0 || m_selectedIndex >= m_tiles.size()) {
@@ -273,6 +293,8 @@ void GridView::rebuild()
     for (int index = 0; index < count; ++index) {
         auto *tile = new VideoTile(index, this);
         tile->setPlaybackBackend(m_playbackBackend);
+        tile->setPlaybackSync(
+            m_playbackSyncEnabled, m_playbackSyncThresholdMs);
         connect(tile, &VideoTile::selected,
                 this, &GridView::selectTile);
         connect(tile, &VideoTile::cleared, this, [this](int tileIndex) {
@@ -300,6 +322,11 @@ void GridView::rebuild()
                         ? findCamera(tile->cameraId()).name
                         : tr("Camera"),
                         message);
+                });
+        connect(tile, &VideoTile::playbackResynced, this,
+                [this](int, const QString &cameraName,
+                       double lagSeconds) {
+                    emit feedResynced(cameraName, lagSeconds);
                 });
         const int row = index / m_columns;
         const int firstIndexInRow = row * m_columns;

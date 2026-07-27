@@ -10,6 +10,7 @@
 #include <gst/gst.h>
 
 class QLabel;
+class QLocalSocket;
 class QProcess;
 class QToolButton;
 class QTimer;
@@ -37,6 +38,8 @@ public:
     void setSelected(bool selected);
     void setFullscreenMode(bool fullscreen);
     void setPlaybackBackend(const QString &backend);
+    void setPlaybackSync(bool enabled, int thresholdMs);
+    void setCameraClockOffset(qint64 offsetMs);
     int heightForWidth(int width) const override;
     QSize sizeHint() const override;
 
@@ -46,6 +49,8 @@ signals:
     void cameraDropped(const QString &cameraId, int index);
     void streamSubtypeChanged(const QString &cameraId, int subtype);
     void playbackError(int index, const QString &message);
+    void playbackResynced(int index, const QString &cameraName,
+                          double lagSeconds);
     void exitFullscreenRequested();
 
 protected:
@@ -72,6 +77,10 @@ private:
                                    gpointer userData);
     void pollGStreamerBus();
     void collectPlayerOutput();
+    void pollPlaybackClock();
+    void readMpvIpc();
+    void evaluatePlaybackClock(double mediaTime);
+    void resetPlaybackClock();
     void updateOverlay();
     void showControls();
     void scheduleReconnect(const QString &detail);
@@ -86,6 +95,7 @@ private:
     int m_index = 0;
     Camera m_camera;
     QProcess *m_player = nullptr;
+    QLocalSocket *m_ipcSocket = nullptr;
     GstElement *m_pipeline = nullptr;
     GstElement *m_videoSink = nullptr;
     QTimer *m_busTimer = nullptr;
@@ -100,11 +110,23 @@ private:
     QToolButton *m_closeButton = nullptr;
     QTimer *m_controlsTimer = nullptr;
     QTimer *m_reconnectTimer = nullptr;
+    QTimer *m_syncTimer = nullptr;
     quintptr m_windowHandle = 0;
     bool m_fullscreenMode = false;
     bool m_paused = false;
     bool m_stopping = false;
     bool m_live = false;
+    bool m_playbackSyncEnabled = true;
+    int m_playbackSyncThresholdMs = 2500;
+    QString m_ipcPath;
+    QByteArray m_ipcBuffer;
+    double m_lastMediaTime = -1.0;
+    double m_cacheEndTime = -1.0;
+    qint64 m_lastClockSampleMs = 0;
+    double m_syncDebtSeconds = 0.0;
+    int m_syncViolationCount = 0;
+    qint64 m_cameraClockOffsetMs = 0;
+    bool m_cameraClockKnown = false;
     int m_retryAttempt = 0;
     QPoint m_dragStartPosition;
     bool m_dragStarted = false;

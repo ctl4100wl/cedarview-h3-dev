@@ -2,10 +2,12 @@
 
 #include "configstore.h"
 
+#include <QHash>
 #include <QMainWindow>
 #include <QQueue>
 
 class GridView;
+class OnvifClockMonitor;
 class QComboBox;
 class QKeyEvent;
 class QListWidget;
@@ -64,6 +66,8 @@ private:
     QQueue<Camera> m_snapshotQueue;
     QProcess *m_snapshotProcess = nullptr;
     QTimer *m_snapshotTimeout = nullptr;
+    OnvifClockMonitor *m_clockMonitor = nullptr;
+    QHash<QString, qint64> m_cameraClockOffsets;
     QString m_snapshotCameraId;
     bool m_autoGrid = false;
 };
