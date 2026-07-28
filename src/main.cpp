@@ -14,7 +14,7 @@ int main(int argc, char *argv[])
     QApplication application(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("MindLab"));
     QCoreApplication::setApplicationName(QStringLiteral("CedarView"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.3.0"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("0.3.4"));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(

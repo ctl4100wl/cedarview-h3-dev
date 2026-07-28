@@ -3,6 +3,7 @@
 #include "camera.h"
 
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QPoint>
 #include <QWidget>
 #include <QStringList>
@@ -10,6 +11,7 @@
 #include <gst/gst.h>
 
 class QLabel;
+class QJsonArray;
 class QLocalSocket;
 class QProcess;
 class QToolButton;
@@ -38,8 +40,8 @@ public:
     void setSelected(bool selected);
     void setFullscreenMode(bool fullscreen);
     void setPlaybackBackend(const QString &backend);
-    void setPlaybackSync(bool enabled, int thresholdMs);
-    void setCameraClockOffset(qint64 offsetMs);
+    void setLiveEdgeSettings(bool enabled, int delayThresholdMs,
+                             bool ultraLiveMode);
     int heightForWidth(int width) const override;
     QSize sizeHint() const override;
 
@@ -49,8 +51,6 @@ signals:
     void cameraDropped(const QString &cameraId, int index);
     void streamSubtypeChanged(const QString &cameraId, int subtype);
     void playbackError(int index, const QString &message);
-    void playbackResynced(int index, const QString &cameraName,
-                          double lagSeconds);
     void exitFullscreenRequested();
 
 protected:
@@ -77,10 +77,17 @@ private:
                                    gpointer userData);
     void pollGStreamerBus();
     void collectPlayerOutput();
-    void pollPlaybackClock();
+    void prepareMpvIpc();
+    void connectMpvIpc(QProcess *player, int attempt = 0);
     void readMpvIpc();
-    void evaluatePlaybackClock(double mediaTime);
-    void resetPlaybackClock();
+    void pollLiveEdge();
+    void evaluateLiveEdgeSample(double timePosition);
+    void flushToLiveEdge(bool automatic);
+    void resetLiveEdgeTracking(bool resetCooldown = false);
+    void releaseMpvIpc();
+    void sendMpvCommand(const QJsonArray &command, int requestId = 0);
+    void preparePlayerLog(const QStringList &arguments);
+    void appendPlayerLog(const QByteArray &data) const;
     void updateOverlay();
     void showControls();
     void scheduleReconnect(const QString &detail);
@@ -95,7 +102,6 @@ private:
     int m_index = 0;
     Camera m_camera;
     QProcess *m_player = nullptr;
-    QLocalSocket *m_ipcSocket = nullptr;
     GstElement *m_pipeline = nullptr;
     GstElement *m_videoSink = nullptr;
     QTimer *m_busTimer = nullptr;
@@ -106,27 +112,40 @@ private:
     QLabel *m_connectionLabel = nullptr;
     QToolButton *m_pauseButton = nullptr;
     QToolButton *m_streamButton = nullptr;
+    QToolButton *m_liveButton = nullptr;
     QToolButton *m_retryButton = nullptr;
     QToolButton *m_closeButton = nullptr;
     QTimer *m_controlsTimer = nullptr;
     QTimer *m_reconnectTimer = nullptr;
-    QTimer *m_syncTimer = nullptr;
+    QTimer *m_liveEdgeTimer = nullptr;
+    QLocalSocket *m_ipcSocket = nullptr;
+    QByteArray m_ipcBuffer;
+    QString m_ipcSocketPath;
+    QString m_playerLogPath;
     quintptr m_windowHandle = 0;
     bool m_fullscreenMode = false;
     bool m_paused = false;
     bool m_stopping = false;
     bool m_live = false;
-    bool m_playbackSyncEnabled = true;
-    int m_playbackSyncThresholdMs = 2500;
-    QString m_ipcPath;
-    QByteArray m_ipcBuffer;
-    double m_lastMediaTime = -1.0;
-    double m_cacheEndTime = -1.0;
-    qint64 m_lastClockSampleMs = 0;
-    double m_syncDebtSeconds = 0.0;
-    int m_syncViolationCount = 0;
-    qint64 m_cameraClockOffsetMs = 0;
-    bool m_cameraClockKnown = false;
+    bool m_liveEdgeCorrectionEnabled = true;
+    bool m_ultraLiveMode = false;
+    bool m_coreIdle = false;
+    bool m_pausedForCache = false;
+    bool m_waitingAfterFlush = false;
+    bool m_flushWasAutomatic = false;
+    bool m_progressSeenAfterFlush = false;
+    int m_liveEdgeDelayThresholdMs = 1250;
+    int m_delayBadSamples = 0;
+    double m_lastTimePosition = -1.0;
+    double m_accumulatedDelaySeconds = 0.0;
+    qint64 m_lastSampleMs = -1;
+    qint64 m_lastProgressMs = -1;
+    qint64 m_frameDropCount = 0;
+    qint64 m_decoderFrameDropCount = 0;
+    qint64 m_monitorReadyAtMs = 0;
+    qint64 m_flushStartedMs = -1;
+    qint64 m_autoCooldownUntilMs = 0;
+    QElapsedTimer m_monotonicClock;
     int m_retryAttempt = 0;
     QPoint m_dragStartPosition;
     bool m_dragStarted = false;

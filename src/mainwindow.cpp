@@ -2,12 +2,11 @@
 
 #include "cameradialog.h"
 #include "gridview.h"
-#include "onvifclockmonitor.h"
 
 #include <QApplication>
 #include <QBrush>
-#include <QCloseEvent>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QDir>
 #include <QDialog>
@@ -27,8 +26,8 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QScreen>
-#include <QSplitter>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTimer>
@@ -238,14 +237,11 @@ MainWindow::MainWindow(bool startFullscreen, QWidget *parent)
 
     m_grid = new GridView(this);
     m_grid->setPlaybackBackend(m_state.playbackBackend);
-    m_grid->setPlaybackSync(
-        m_state.playbackSyncEnabled,
-        m_state.playbackSyncThresholdMs);
+    m_grid->setLiveEdgeSettings(
+        m_state.liveEdgeCorrectionEnabled,
+        m_state.liveEdgeDelayThresholdMs,
+        m_state.ultraLiveMode);
     m_grid->setCameras(m_state.cameras);
-    for (auto it = m_cameraClockOffsets.cbegin();
-         it != m_cameraClockOffsets.cend(); ++it) {
-        m_grid->setCameraClockOffset(it.key(), it.value());
-    }
     m_autoGrid = m_state.gridMode == QStringLiteral("auto");
     if (m_autoGrid) {
         m_grid->setTileCount(qMax(1, m_state.cameras.size()));
@@ -276,14 +272,6 @@ MainWindow::MainWindow(bool startFullscreen, QWidget *parent)
                     toggleFullscreen();
                 }
             });
-    connect(m_grid, &GridView::feedResynced, this,
-            [this](const QString &cameraName, double lagSeconds) {
-                statusBar()->showMessage(
-                    tr("%1 refreshed after drifting %2 s behind")
-                        .arg(cameraName)
-                        .arg(lagSeconds, 0, 'f', 1),
-                    7000);
-            });
 
     auto *splitter = new QSplitter(this);
     splitter->setHandleWidth(1);
@@ -292,34 +280,6 @@ MainWindow::MainWindow(bool startFullscreen, QWidget *parent)
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
     setCentralWidget(splitter);
-
-    m_clockMonitor = new OnvifClockMonitor(this);
-    m_clockMonitor->setCameras(m_state.cameras);
-    m_clockMonitor->setIntervalSeconds(
-        m_state.onvifClockCheckIntervalSeconds);
-    m_clockMonitor->setEnabled(m_state.onvifClockCheckEnabled);
-    connect(m_clockMonitor, &OnvifClockMonitor::clockMeasured,
-            this, [this](const QString &cameraId, qint64 offsetMs) {
-                m_cameraClockOffsets.insert(cameraId, offsetMs);
-                m_grid->setCameraClockOffset(cameraId, offsetMs);
-                if (qAbs(offsetMs) >=
-                    m_state.playbackSyncThresholdMs) {
-                    QString cameraName = tr("Camera");
-                    for (const Camera &camera : m_state.cameras) {
-                        if (camera.id == cameraId) {
-                            cameraName = camera.name;
-                            break;
-                        }
-                    }
-                    statusBar()->showMessage(
-                        tr("%1 camera clock differs from Linux by %2 s")
-                            .arg(cameraName)
-                            .arg(static_cast<double>(offsetMs) / 1000.0,
-                                 0, 'f', 1),
-                        7000);
-                }
-            });
-    m_clockMonitor->start();
 
     refreshCameraList();
     applyStyle();
@@ -382,14 +342,9 @@ void MainWindow::addCamera()
         m_state.defaultPassword = camera.password;
     }
     m_state.cameras.append(camera);
-    m_clockMonitor->setCameras(m_state.cameras);
     refreshCameraList();
     m_cameraList->setCurrentRow(m_state.cameras.size() - 1);
     m_grid->setCameras(m_state.cameras);
-    for (auto it = m_cameraClockOffsets.cbegin();
-         it != m_cameraClockOffsets.cend(); ++it) {
-        m_grid->setCameraClockOffset(it.key(), it.value());
-    }
     if (m_autoGrid) {
         m_grid->setTileCount(qMax(1, m_state.cameras.size()));
     }
@@ -415,14 +370,9 @@ void MainWindow::editCamera()
         m_state.defaultPassword = camera.password;
     }
     m_state.cameras[index] = camera;
-    m_clockMonitor->setCameras(m_state.cameras);
     refreshCameraList();
     m_cameraList->setCurrentRow(index);
     m_grid->setCameras(m_state.cameras);
-    for (auto it = m_cameraClockOffsets.cbegin();
-         it != m_cameraClockOffsets.cend(); ++it) {
-        m_grid->setCameraClockOffset(it.key(), it.value());
-    }
     if (m_autoGrid) {
         m_grid->setTileCount(qMax(1, m_state.cameras.size()));
     }
@@ -445,8 +395,6 @@ void MainWindow::removeCamera()
         return;
     }
     m_state.cameras.removeAt(index);
-    m_cameraClockOffsets.remove(camera.id);
-    m_clockMonitor->setCameras(m_state.cameras);
     for (QString &assignment : m_state.assignments) {
         if (assignment == camera.id) {
             assignment.clear();
@@ -454,10 +402,6 @@ void MainWindow::removeCamera()
     }
     refreshCameraList();
     m_grid->setCameras(m_state.cameras);
-    for (auto it = m_cameraClockOffsets.cbegin();
-         it != m_cameraClockOffsets.cend(); ++it) {
-        m_grid->setCameraClockOffset(it.key(), it.value());
-    }
     saveState();
 }
 
@@ -523,34 +467,6 @@ void MainWindow::showDeveloperSettings()
         backend->findData(m_state.playbackBackend);
     backend->setCurrentIndex(qMax(0, current));
 
-    auto *syncEnabled = new QCheckBox(
-        tr("Refresh only a feed that falls behind"), &dialog);
-    syncEnabled->setChecked(m_state.playbackSyncEnabled);
-
-    auto *syncThreshold = new QSpinBox(&dialog);
-    syncThreshold->setRange(1000, 15000);
-    syncThreshold->setSingleStep(500);
-    syncThreshold->setSuffix(tr(" ms"));
-    syncThreshold->setValue(m_state.playbackSyncThresholdMs);
-    syncThreshold->setToolTip(
-        tr("Two consecutive drift readings must exceed this value."));
-    syncThreshold->setEnabled(syncEnabled->isChecked());
-    connect(syncEnabled, &QCheckBox::toggled,
-            syncThreshold, &QWidget::setEnabled);
-
-    auto *clockCheck = new QCheckBox(
-        tr("Read camera clocks through ONVIF port 80"), &dialog);
-    clockCheck->setChecked(m_state.onvifClockCheckEnabled);
-
-    auto *clockInterval = new QSpinBox(&dialog);
-    clockInterval->setRange(15, 3600);
-    clockInterval->setSuffix(tr(" s"));
-    clockInterval->setValue(
-        m_state.onvifClockCheckIntervalSeconds);
-    clockInterval->setEnabled(clockCheck->isChecked());
-    connect(clockCheck, &QCheckBox::toggled,
-            clockInterval, &QWidget::setEnabled);
-
     const bool h264Available = gstFactoryAvailable("v4l2slh264dec");
     const bool h265Available = gstFactoryAvailable("v4l2slh265dec");
     auto *status = new QLabel(
@@ -560,23 +476,43 @@ void MainWindow::showDeveloperSettings()
         &dialog);
     status->setWordWrap(true);
 
+    auto *liveEdgeEnabled = new QCheckBox(
+        tr("Flush delayed MPV feeds back to live"), &dialog);
+    liveEdgeEnabled->setChecked(m_state.liveEdgeCorrectionEnabled);
+
+    auto *delayThreshold = new QSpinBox(&dialog);
+    delayThreshold->setRange(750, 5000);
+    delayThreshold->setSingleStep(250);
+    delayThreshold->setSuffix(tr(" ms"));
+    delayThreshold->setValue(m_state.liveEdgeDelayThresholdMs);
+    delayThreshold->setEnabled(liveEdgeEnabled->isChecked());
+    connect(liveEdgeEnabled, &QCheckBox::toggled,
+            delayThreshold, &QWidget::setEnabled);
+
+    auto *ultraLive = new QCheckBox(
+        tr("Ultra Live timing (experimental)"), &dialog);
+    ultraLive->setChecked(m_state.ultraLiveMode);
+    ultraLive->setToolTip(
+        tr("Outputs silent RTSP frames without waiting on timestamps. "
+           "This can reduce delay, but irregular streams may look choppy."));
+
     auto *note = new QLabel(
-        tr("Changing backend restarts every active tile. MPV sync uses its "
-           "local IPC timestamps and the Linux clock; only a lagging tile is "
-           "refreshed. ONVIF clock checks are informational and use "
-           "http://CAMERA:80/onvif/device_service. GStreamer mode "
+        tr("Changing backend restarts every active tile. GStreamer mode "
            "prefers the stateless V4L2 H.264/H.265 decoders and embeds "
            "XVideo directly in each tile. MPV mode preserves CedarView's "
-           "full crop and digital-zoom controls."),
+           "full crop and digital-zoom controls.\n\n"
+           "Live-edge correction uses MPV media-time progress only. It "
+           "flushes queued frames first and reopens one feed only if video "
+           "is still frozen six seconds later. Automatic corrections have "
+           "a 60-second cooldown."),
         &dialog);
     note->setWordWrap(true);
 
     auto *form = new QFormLayout;
     form->addRow(tr("Playback backend"), backend);
-    form->addRow(tr("Live feed sync"), syncEnabled);
-    form->addRow(tr("Refresh threshold"), syncThreshold);
-    form->addRow(tr("Camera clock check"), clockCheck);
-    form->addRow(tr("Clock-check interval"), clockInterval);
+    form->addRow(tr("Live edge"), liveEdgeEnabled);
+    form->addRow(tr("Delay threshold"), delayThreshold);
+    form->addRow(tr("Low-delay output"), ultraLive);
     form->addRow(QString(), status);
     form->addRow(QString(), note);
 
@@ -598,25 +534,33 @@ void MainWindow::showDeveloperSettings()
     const bool backendChanged =
         selected != m_state.playbackBackend;
     m_state.playbackBackend = selected;
-    m_state.playbackSyncEnabled = syncEnabled->isChecked();
-    m_state.playbackSyncThresholdMs = syncThreshold->value();
-    m_state.onvifClockCheckEnabled = clockCheck->isChecked();
-    m_state.onvifClockCheckIntervalSeconds = clockInterval->value();
-    if (backendChanged) {
+    m_state.liveEdgeCorrectionEnabled =
+        liveEdgeEnabled->isChecked();
+    m_state.liveEdgeDelayThresholdMs =
+        delayThreshold->value();
+    m_state.ultraLiveMode = ultraLive->isChecked();
+    if (backendChanged && selected == QStringLiteral("mpv")) {
+        m_grid->setLiveEdgeSettings(
+            m_state.liveEdgeCorrectionEnabled,
+            m_state.liveEdgeDelayThresholdMs,
+            m_state.ultraLiveMode);
         m_grid->setPlaybackBackend(selected);
-    }
-    m_grid->setPlaybackSync(
-        m_state.playbackSyncEnabled,
-        m_state.playbackSyncThresholdMs);
-    m_clockMonitor->setIntervalSeconds(
-        m_state.onvifClockCheckIntervalSeconds);
-    m_clockMonitor->setEnabled(m_state.onvifClockCheckEnabled);
-    if (m_state.onvifClockCheckEnabled) {
-        m_clockMonitor->checkNow();
+    } else {
+        if (backendChanged) {
+            m_grid->setPlaybackBackend(selected);
+        }
+        m_grid->setLiveEdgeSettings(
+            m_state.liveEdgeCorrectionEnabled,
+            m_state.liveEdgeDelayThresholdMs,
+            m_state.ultraLiveMode);
     }
     saveState();
     statusBar()->showMessage(
-        tr("Developer playback and sync settings saved"),
+        backendChanged
+            ? (selected == QStringLiteral("gstreamer")
+                   ? tr("Playback switched to GStreamer / Cedrus")
+                   : tr("Playback switched to MPV / FFmpeg"))
+            : tr("Live-edge settings updated"),
         5000);
 }
 

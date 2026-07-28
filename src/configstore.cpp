@@ -54,19 +54,14 @@ AppState ConfigStore::load()
     if (state.playbackBackend != QStringLiteral("gstreamer")) {
         state.playbackBackend = QStringLiteral("mpv");
     }
-    state.playbackSyncEnabled =
-        root.value(QStringLiteral("playbackSyncEnabled")).toBool(true);
-    state.playbackSyncThresholdMs = qBound(
-        1000,
-        root.value(QStringLiteral("playbackSyncThresholdMs")).toInt(2500),
-        15000);
-    state.onvifClockCheckEnabled =
-        root.value(QStringLiteral("onvifClockCheckEnabled")).toBool(true);
-    state.onvifClockCheckIntervalSeconds = qBound(
-        15,
-        root.value(QStringLiteral("onvifClockCheckIntervalSeconds"))
-            .toInt(60),
-        3600);
+    state.liveEdgeCorrectionEnabled =
+        root.value(QStringLiteral("liveEdgeCorrectionEnabled")).toBool(true);
+    state.liveEdgeDelayThresholdMs = qBound(
+        750,
+        root.value(QStringLiteral("liveEdgeDelayThresholdMs")).toInt(1250),
+        5000);
+    state.ultraLiveMode =
+        root.value(QStringLiteral("ultraLiveMode")).toBool(false);
     const QJsonArray cameras = root.value(QStringLiteral("cameras")).toArray();
     for (const QJsonValue &value : cameras) {
         if (value.isObject()) {
@@ -115,14 +110,11 @@ bool ConfigStore::save(const AppState &state, QString *error)
         {QStringLiteral("defaultPassword"), state.defaultPassword},
         {QStringLiteral("theme"), state.theme},
         {QStringLiteral("playbackBackend"), state.playbackBackend},
-        {QStringLiteral("playbackSyncEnabled"),
-         state.playbackSyncEnabled},
-        {QStringLiteral("playbackSyncThresholdMs"),
-         state.playbackSyncThresholdMs},
-        {QStringLiteral("onvifClockCheckEnabled"),
-         state.onvifClockCheckEnabled},
-        {QStringLiteral("onvifClockCheckIntervalSeconds"),
-         state.onvifClockCheckIntervalSeconds},
+        {QStringLiteral("liveEdgeCorrectionEnabled"),
+         state.liveEdgeCorrectionEnabled},
+        {QStringLiteral("liveEdgeDelayThresholdMs"),
+         state.liveEdgeDelayThresholdMs},
+        {QStringLiteral("ultraLiveMode"), state.ultraLiveMode},
         {QStringLiteral("cameras"), cameras},
         {QStringLiteral("assignments"), assignments},
     };

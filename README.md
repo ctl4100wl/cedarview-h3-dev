@@ -28,9 +28,15 @@ application code, cloud APIs, logos, or proprietary assets.
 - Per-feed Pause/Resume, immediate reconnect, Close, and Main/Sub switching
 - Main/Sub changes persist as the camera's preferred stream
 - Automatic reconnect after stream failure with 2–15 second capped backoff
-- MPV live-sync watchdog that compares playback progress and buffered live
-  edge against Linux time, then refreshes only a lagging feed
-- ONVIF camera-clock checks through the standard Imou port 80 device service
+- Persistent per-camera MPV exit logs under
+  `~/.local/state/cedarview/mpv/`
+- Per-feed **LIVE** button that tells MPV to discard queued frames without
+  recreating its X11 window
+- Safe automatic live-edge correction based on monotonic media-time progress,
+  with an eight-second warmup, repeated-sample confirmation, flush-first
+  recovery, and a 60-second cooldown
+- Optional **Ultra Live timing** for silent MPV feeds using `--untimed=yes`;
+  disabled by default because irregular RTSP streams can become choppy
 - Fullscreen idle mode hides both tile overlays and the mouse cursor
 - Occupancy-aware camera moves: dragging an already shown camera to another
   tile swaps the two tile assignments instead of duplicating the stream
@@ -54,6 +60,46 @@ decode 25 streams. A realistic H3 target is:
 
 Exact performance depends on whether Cedrus/V4L2 hardware decoding is active.
 
+## Playback failure logs
+
+CedarView records MPV warnings and the final exit status separately for every
+camera. This avoids losing the real failure when a tile automatically
+reconnects:
+
+```bash
+tail -n 120 ~/.local/state/cedarview/mpv/camera-*.log
+```
+
+Each log rotates after 2 MiB. Reconnect backoff is reset only after the player
+has remained alive for 60 seconds.
+
+## Staying near the live edge
+
+Every MPV tile owns a local JSON IPC socket. Once per second CedarView compares
+the stream's `time-pos` progress with a monotonic Linux timer. It does not use
+camera wall-clock time, ONVIF polling, or `demuxer-cache-time`.
+
+Automatic correction follows a bounded sequence:
+
+1. Ignore the first eight seconds after a stream opens.
+2. Require the configured delay threshold for three readings, or confirm that
+   media time has stopped for four seconds.
+3. Send MPV's `drop-buffers` command to discard queued packets and frames.
+4. Keep the existing MPV process and X11 window if media progress resumes.
+5. Reopen only that feed if no media progress appears within six seconds.
+6. Permit no further automatic correction on that tile for 60 seconds.
+
+Hover over a tile and press **LIVE** to request the same buffer flush manually.
+Manual use does not trigger an automatic restart. The automatic controller and
+its 750–5000 ms delay threshold are configurable under **Developer settings…**.
+Disabling automatic correction leaves the manual **LIVE** button available.
+
+**Ultra Live timing** is a separate experimental option. It asks MPV to output
+silent-stream frames without waiting on their timestamps and may reduce steady
+latency further. Enabling or disabling it restarts active MPV tiles because it
+is a player startup option. Leave it off if a camera has irregular timestamps
+or the picture becomes choppy.
+
 ## Build on Armbian
 
 ```bash
@@ -71,31 +117,6 @@ it restarts active tiles immediately:
 - **GStreamer / Cedrus** prefers `v4l2slh264dec` or `v4l2slh265dec`
   automatically after inspecting the stream codec. It uses `xvimagesink` with
   `ximagesink` fallback and embeds each sink in its Qt tile.
-
-The same dialog controls **Live feed sync**. In MPV mode, every tile exposes a
-private local JSON IPC socket. CedarView samples `time-pos` and
-`demuxer-cache-time` every two seconds:
-
-- media progress is compared with elapsed Linux system time
-- the playhead is compared with mpv's buffered RTSP live edge
-- two consecutive readings must exceed the configured threshold
-- only the lagging tile is restarted; other feeds keep playing
-
-The default threshold is 2.5 seconds. This avoids refreshing a feed because of
-one momentary network or decode hiccup.
-
-RTSP/RTP timestamps are normally relative media counters, not an absolute
-camera wall clock. CedarView therefore checks the camera clock separately with
-ONVIF `GetSystemDateAndTime` at:
-
-```text
-http://CAMERA_IP:80/onvif/device_service
-```
-
-That offset is shown in the tile's hover status when it exceeds one second.
-A camera-clock mismatch is informational: refreshing RTSP cannot correct the
-camera's own clock. The sync watchdog refreshes only when playback itself has
-fallen behind.
 
 Install or verify both backend stacks independently with:
 
@@ -190,6 +211,7 @@ Move the pointer over a feed to reveal its compact overlay:
 - **Ⅱ / ▶** pauses or resumes only that feed
 - **MAIN / SUB** switches `subtype=0` and `subtype=1` immediately
 - **↻** reconnects immediately
+- **LIVE** discards queued frames and jumps toward the current live edge
 - **×** closes the feed and clears its tile
 
 The overlay disappears after 2.2 seconds without movement. In fullscreen the
@@ -271,7 +293,7 @@ output tries XVideo first and plain X11 second, avoiding the blank
 
 ## PTZ
 
-The target Imou cameras are ONVIF-compatible on HTTP port 80, so the planned PTZ module does
+The target Imou cameras are ONVIF-compatible, so the planned PTZ module does
 not need a reverse-engineered Imou cloud protocol. It can use ONVIF to:
 
 - discover cameras

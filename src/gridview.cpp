@@ -200,23 +200,16 @@ void GridView::setPlaybackBackend(const QString &backend)
     }
 }
 
-void GridView::setPlaybackSync(bool enabled, int thresholdMs)
+void GridView::setLiveEdgeSettings(bool enabled, int delayThresholdMs,
+                                   bool ultraLiveMode)
 {
-    m_playbackSyncEnabled = enabled;
-    m_playbackSyncThresholdMs = qBound(1000, thresholdMs, 15000);
+    m_liveEdgeCorrectionEnabled = enabled;
+    m_liveEdgeDelayThresholdMs = qBound(750, delayThresholdMs, 5000);
+    m_ultraLiveMode = ultraLiveMode;
     for (VideoTile *tile : m_tiles) {
-        tile->setPlaybackSync(
-            m_playbackSyncEnabled, m_playbackSyncThresholdMs);
-    }
-}
-
-void GridView::setCameraClockOffset(const QString &cameraId,
-                                    qint64 offsetMs)
-{
-    for (VideoTile *tile : m_tiles) {
-        if (tile->cameraId() == cameraId) {
-            tile->setCameraClockOffset(offsetMs);
-        }
+        tile->setLiveEdgeSettings(
+            m_liveEdgeCorrectionEnabled, m_liveEdgeDelayThresholdMs,
+            m_ultraLiveMode);
     }
 }
 
@@ -293,8 +286,9 @@ void GridView::rebuild()
     for (int index = 0; index < count; ++index) {
         auto *tile = new VideoTile(index, this);
         tile->setPlaybackBackend(m_playbackBackend);
-        tile->setPlaybackSync(
-            m_playbackSyncEnabled, m_playbackSyncThresholdMs);
+        tile->setLiveEdgeSettings(
+            m_liveEdgeCorrectionEnabled, m_liveEdgeDelayThresholdMs,
+            m_ultraLiveMode);
         connect(tile, &VideoTile::selected,
                 this, &GridView::selectTile);
         connect(tile, &VideoTile::cleared, this, [this](int tileIndex) {
@@ -322,11 +316,6 @@ void GridView::rebuild()
                         ? findCamera(tile->cameraId()).name
                         : tr("Camera"),
                         message);
-                });
-        connect(tile, &VideoTile::playbackResynced, this,
-                [this](int, const QString &cameraName,
-                       double lagSeconds) {
-                    emit feedResynced(cameraName, lagSeconds);
                 });
         const int row = index / m_columns;
         const int firstIndexInRow = row * m_columns;

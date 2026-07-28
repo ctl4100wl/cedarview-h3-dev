@@ -16,10 +16,9 @@ struct AppState
     QString defaultPassword;
     QString theme = QStringLiteral("dark");
     QString playbackBackend = QStringLiteral("mpv");
-    bool playbackSyncEnabled = true;
-    int playbackSyncThresholdMs = 2500;
-    bool onvifClockCheckEnabled = true;
-    int onvifClockCheckIntervalSeconds = 60;
+    bool liveEdgeCorrectionEnabled = true;
+    int liveEdgeDelayThresholdMs = 1250;
+    bool ultraLiveMode = false;
 };
 
 class ConfigStore

@@ -29,8 +29,8 @@ public:
     int selectedIndex() const { return m_selectedIndex; }
     void setFullscreenMode(bool fullscreen);
     void setPlaybackBackend(const QString &backend);
-    void setPlaybackSync(bool enabled, int thresholdMs);
-    void setCameraClockOffset(const QString &cameraId, qint64 offsetMs);
+    void setLiveEdgeSettings(bool enabled, int delayThresholdMs,
+                             bool ultraLiveMode);
 
 public slots:
     void assignCamera(const Camera &camera);
@@ -41,7 +41,6 @@ signals:
     void assignmentsChanged();
     void playbackError(const QString &cameraName, const QString &message);
     void cameraStreamChanged(const QString &cameraId, int subtype);
-    void feedResynced(const QString &cameraName, double lagSeconds);
     void exitFullscreenRequested();
 
 protected:
@@ -61,8 +60,9 @@ private:
     int m_tileCount = 4;
     int m_selectedIndex = 0;
     QString m_playbackBackend = QStringLiteral("mpv");
-    bool m_playbackSyncEnabled = true;
-    int m_playbackSyncThresholdMs = 2500;
+    bool m_liveEdgeCorrectionEnabled = true;
+    int m_liveEdgeDelayThresholdMs = 1250;
+    bool m_ultraLiveMode = false;
     QTimer *m_cursorTimer = nullptr;
     bool m_fullscreenMode = false;
     bool m_cursorHidden = false;

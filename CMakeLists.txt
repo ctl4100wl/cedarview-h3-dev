@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(CedarView VERSION 0.3.2 LANGUAGES CXX)
+project(CedarView VERSION 0.3.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,8 +24,6 @@ qt_add_executable(cedarview
     src/cameradialog.cpp
     src/rtspscanner.h
     src/rtspscanner.cpp
-    src/onvifclockmonitor.h
-    src/onvifclockmonitor.cpp
     src/videotile.h
     src/videotile.cpp
     src/gridview.h

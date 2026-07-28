@@ -1,9 +1,10 @@
 #include "videotile.h"
 
 #include <QApplication>
-#include <QContextMenuEvent>
 #include <QCoreApplication>
+#include <QContextMenuEvent>
 #include <QDateTime>
+#include <QDir>
 #include <QDrag>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -11,15 +12,15 @@
 #include <QEvent>
 #include <QFile>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLocalSocket>
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QProcess>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QResizeEvent>
 #include <QStyle>
 #include <QTimer>
@@ -34,7 +35,14 @@ namespace {
 constexpr auto CameraMimeType = "application/x-cedarview-camera-id";
 constexpr int ControlsTimeoutMs = 2200;
 constexpr int MaximumReconnectDelayMs = 15000;
-constexpr int PlaybackClockPollMs = 2000;
+constexpr int StablePlaybackMs = 60000;
+constexpr int LiveEdgePollIntervalMs = 1000;
+constexpr int LiveEdgeWarmupMs = 8000;
+constexpr int LiveEdgeBadSamplesRequired = 3;
+constexpr int LiveEdgeStallMs = 4000;
+constexpr int LiveEdgeFlushRecoveryMs = 6000;
+constexpr int LiveEdgeCooldownMs = 60000;
+constexpr qint64 MaximumPlayerLogBytes = 2 * 1024 * 1024;
 
 class AspectRatioSurface final : public QWidget
 {
@@ -132,6 +140,8 @@ VideoTile::VideoTile(int index, QWidget *parent)
         QStringLiteral("Ⅱ"), tr("Pause this feed"), this);
     m_streamButton = makeOverlayButton(
         tr("SUB"), tr("Switch between Main and Sub stream"), this);
+    m_liveButton = makeOverlayButton(
+        tr("LIVE"), tr("Discard queued frames and jump to live"), this);
     m_retryButton = makeOverlayButton(
         QStringLiteral("↻"), tr("Reconnect now"), this);
     m_closeButton = makeOverlayButton(
@@ -147,6 +157,10 @@ VideoTile::VideoTile(int index, QWidget *parent)
     });
     connect(m_streamButton, &QToolButton::clicked, this, [this] {
         setStreamSubtype(m_camera.subtype == 0 ? 1 : 0);
+        showControls();
+    });
+    connect(m_liveButton, &QToolButton::clicked, this, [this] {
+        flushToLiveEdge(false);
         showControls();
     });
     connect(m_retryButton, &QToolButton::clicked,
@@ -174,15 +188,16 @@ VideoTile::VideoTile(int index, QWidget *parent)
         }
     });
 
-    m_syncTimer = new QTimer(this);
-    m_syncTimer->setInterval(PlaybackClockPollMs);
-    connect(m_syncTimer, &QTimer::timeout,
-            this, &VideoTile::pollPlaybackClock);
-
     m_busTimer = new QTimer(this);
     m_busTimer->setInterval(120);
     connect(m_busTimer, &QTimer::timeout,
             this, &VideoTile::pollGStreamerBus);
+
+    m_liveEdgeTimer = new QTimer(this);
+    m_liveEdgeTimer->setInterval(LiveEdgePollIntervalMs);
+    connect(m_liveEdgeTimer, &QTimer::timeout,
+            this, &VideoTile::pollLiveEdge);
+    m_monotonicClock.start();
 
     updateOverlay();
     hideControls();
@@ -191,7 +206,6 @@ VideoTile::VideoTile(int index, QWidget *parent)
 VideoTile::~VideoTile()
 {
     m_stopping = true;
-    resetPlaybackClock();
     releaseGStreamer();
     releasePlayer(true);
 }
@@ -216,9 +230,8 @@ void VideoTile::play(const Camera &camera)
     m_paused = false;
     m_live = false;
     m_retryAttempt = 0;
+    resetLiveEdgeTracking(true);
     m_playerOutput.clear();
-    m_cameraClockKnown = false;
-    resetPlaybackClock();
     m_stopping = false;
     updateOverlay();
     startPlayback();
@@ -235,7 +248,6 @@ void VideoTile::startPlayback()
     m_stopping = false;
     m_live = false;
     m_playerOutput.clear();
-    resetPlaybackClock();
     updateOverlay();
     if (m_playbackBackend == QStringLiteral("gstreamer")) {
         playGStreamer();
@@ -247,11 +259,7 @@ void VideoTile::startPlayback()
 void VideoTile::playMpv()
 {
     setStatus(tr("Connecting…"));
-    m_ipcPath = QStringLiteral("/tmp/cedarview-mpv-%1-%2.sock")
-                    .arg(QCoreApplication::applicationPid())
-                    .arg(m_index);
-    QFile::remove(m_ipcPath);
-
+    prepareMpvIpc();
     auto *player = new QProcess(this);
     m_player = player;
     player->setProcessChannelMode(QProcess::MergedChannels);
@@ -260,6 +268,7 @@ void VideoTile::playMpv()
         if (m_player != player) {
             return;
         }
+        connectMpvIpc(player);
         m_connectionLabel->setText(
             tr("%1 • %2")
                 .arg(m_camera.transport.toUpper(),
@@ -268,9 +277,12 @@ void VideoTile::playMpv()
             if (m_player == player &&
                 player->state() == QProcess::Running) {
                 markLive();
-                if (m_playbackSyncEnabled) {
-                    m_syncTimer->start();
-                }
+            }
+        });
+        QTimer::singleShot(StablePlaybackMs, this, [this, player] {
+            if (m_player == player &&
+                player->state() == QProcess::Running) {
+                m_retryAttempt = 0;
             }
         });
     });
@@ -283,6 +295,9 @@ void VideoTile::playMpv()
                     return;
                 }
                 if (error == QProcess::FailedToStart) {
+                    appendPlayerLog(
+                        QByteArrayLiteral(
+                            "\n[cedarview] mpv failed to start\n"));
                     scheduleReconnect(
                         tr("Could not launch mpv. Install the mpv package."));
                 }
@@ -313,11 +328,21 @@ void VideoTile::playMpv()
                                           : tr("stopped"))
                                  .arg(exitCode);
                 }
-                scheduleReconnect(detail);
+                appendPlayerLog(
+                    QStringLiteral(
+                        "\n[cedarview] mpv exit status=%1 code=%2\n")
+                        .arg(status == QProcess::CrashExit
+                                 ? QStringLiteral("crash")
+                                 : QStringLiteral("normal"))
+                        .arg(exitCode)
+                        .toUtf8());
+                scheduleReconnect(
+                    tr("%1\nLog: %2").arg(detail, m_playerLogPath));
             });
 
-    player->start(QStringLiteral("mpv"), playerArguments(),
-                  QIODevice::ReadOnly);
+    const QStringList arguments = playerArguments();
+    preparePlayerLog(arguments);
+    player->start(QStringLiteral("mpv"), arguments, QIODevice::ReadOnly);
 }
 
 void VideoTile::playGStreamer()
@@ -506,6 +531,7 @@ QStringList VideoTile::playerArguments() const
         QStringLiteral("--osd-level=0"),
         QStringLiteral("--input-default-bindings=no"),
         QStringLiteral("--input-cursor=no"),
+        QStringLiteral("--input-ipc-server=%1").arg(m_ipcSocketPath),
         QStringLiteral("--profile=low-latency"),
         QStringLiteral("--framedrop=vo"),
         QStringLiteral("--hwdec=auto"),
@@ -515,9 +541,8 @@ QStringList VideoTile::playerArguments() const
         QStringLiteral("--rtsp-transport=%1").arg(m_camera.transport),
         QStringLiteral("--msg-level=all=warn"),
     };
-    if (m_playbackSyncEnabled && !m_ipcPath.isEmpty()) {
-        arguments.append(
-            QStringLiteral("--input-ipc-server=%1").arg(m_ipcPath));
+    if (m_ultraLiveMode) {
+        arguments.append(QStringLiteral("--untimed=yes"));
     }
 
     arguments.append(
@@ -552,59 +577,92 @@ void VideoTile::collectPlayerOutput()
     if (!m_player) {
         return;
     }
-    m_playerOutput.append(m_player->readAllStandardOutput());
+    const QByteArray output = m_player->readAllStandardOutput();
+    m_playerOutput.append(output);
+    appendPlayerLog(output);
     constexpr qsizetype MaxLogBytes = 4096;
     if (m_playerOutput.size() > MaxLogBytes) {
         m_playerOutput = m_playerOutput.right(MaxLogBytes);
     }
 }
 
-void VideoTile::pollPlaybackClock()
+void VideoTile::prepareMpvIpc()
 {
-    if (!m_playbackSyncEnabled ||
-        m_playbackBackend != QStringLiteral("mpv") ||
-        !m_player || m_player->state() != QProcess::Running ||
-        m_paused || !m_live || m_ipcPath.isEmpty()) {
+    releaseMpvIpc();
+    resetLiveEdgeTracking(false);
+    m_ipcSocketPath = QStringLiteral("/tmp/cedarview-%1-tile-%2.sock")
+                          .arg(QCoreApplication::applicationPid())
+                          .arg(m_index);
+    QFile::remove(m_ipcSocketPath);
+}
+
+void VideoTile::connectMpvIpc(QProcess *player, int attempt)
+{
+    if (m_player != player ||
+        player->state() != QProcess::Running ||
+        m_ipcSocketPath.isEmpty()) {
+        return;
+    }
+    if (attempt >= 30) {
+        appendPlayerLog(
+            QByteArrayLiteral(
+                "[cedarview] MPV IPC socket was not available after 6 s\n"));
+        updateOverlay();
         return;
     }
 
-    if (!m_ipcSocket) {
-        auto *socket = new QLocalSocket(this);
-        m_ipcSocket = socket;
-        connect(socket, &QLocalSocket::readyRead,
-                this, &VideoTile::readMpvIpc);
-        connect(socket, &QLocalSocket::disconnected,
-                this, [this, socket] {
-                    if (m_ipcSocket == socket) {
-                        m_ipcSocket = nullptr;
-                    }
-                    if (socket) {
-                        socket->deleteLater();
-                    }
-                });
-    }
+    auto *socket = new QLocalSocket(this);
+    m_ipcSocket = socket;
+    connect(socket, &QLocalSocket::readyRead,
+            this, &VideoTile::readMpvIpc);
+    connect(socket, &QLocalSocket::connected, this, [this, socket] {
+        if (m_ipcSocket != socket) {
+            return;
+        }
+        socket->setProperty("cedarviewEverConnected", true);
+        appendPlayerLog(
+            QByteArrayLiteral("[cedarview] MPV IPC connected\n"));
+        updateOverlay();
+        if (m_liveEdgeCorrectionEnabled) {
+            m_liveEdgeTimer->start();
+            pollLiveEdge();
+        }
+    });
+    connect(socket, &QLocalSocket::disconnected, this, [this, socket] {
+        if (m_ipcSocket != socket) {
+            return;
+        }
+        m_liveEdgeTimer->stop();
+        m_ipcSocket = nullptr;
+        socket->deleteLater();
+        updateOverlay();
+    });
+    connect(socket, &QLocalSocket::errorOccurred, this,
+            [this, player, socket, attempt](QLocalSocket::LocalSocketError) {
+                if (m_ipcSocket != socket ||
+                    socket->property("cedarviewEverConnected").toBool()) {
+                    return;
+                }
+                socket->abort();
+                m_ipcSocket = nullptr;
+                socket->deleteLater();
+                QTimer::singleShot(
+                    200, this, [this, player, attempt] {
+                        connectMpvIpc(player, attempt + 1);
+                    });
+            });
+    socket->connectToServer(m_ipcSocketPath, QIODevice::ReadWrite);
 
-    if (m_ipcSocket->state() == QLocalSocket::UnconnectedState) {
-        m_ipcSocket->connectToServer(m_ipcPath, QIODevice::ReadWrite);
-        return;
-    }
-    if (m_ipcSocket->state() != QLocalSocket::ConnectedState) {
-        return;
-    }
-
-    const QByteArray mediaRequest =
-        QByteArrayLiteral(
-            "{\"command\":[\"get_property\",\"time-pos\"],"
-            "\"request_id\":3201}\n");
-    const QByteArray cacheRequest =
-        QByteArrayLiteral(
-            "{\"command\":[\"get_property\",\"demuxer-cache-time\"],"
-            "\"request_id\":3202}\n");
-    m_ipcSocket->write(cacheRequest);
-    // mpv processes IPC commands in order. Read the current live edge first
-    // so the following playhead sample is compared with the same poll cycle.
-    m_ipcSocket->write(mediaRequest);
-    m_ipcSocket->flush();
+    QTimer::singleShot(200, this, [this, player, socket, attempt] {
+        if (m_player != player || m_ipcSocket != socket ||
+            socket->state() == QLocalSocket::ConnectedState) {
+            return;
+        }
+        socket->abort();
+        m_ipcSocket = nullptr;
+        socket->deleteLater();
+        connectMpvIpc(player, attempt + 1);
+    });
 }
 
 void VideoTile::readMpvIpc()
@@ -614,96 +672,286 @@ void VideoTile::readMpvIpc()
     }
     m_ipcBuffer.append(m_ipcSocket->readAll());
     while (true) {
-        const qsizetype newline = m_ipcBuffer.indexOf('\n');
-        if (newline < 0) {
+        const qsizetype lineEnd = m_ipcBuffer.indexOf('\n');
+        if (lineEnd < 0) {
             break;
         }
-        const QByteArray line = m_ipcBuffer.left(newline).trimmed();
-        m_ipcBuffer.remove(0, newline + 1);
+        const QByteArray line = m_ipcBuffer.left(lineEnd).trimmed();
+        m_ipcBuffer.remove(0, lineEnd + 1);
         if (line.isEmpty()) {
             continue;
         }
-        const QJsonDocument document = QJsonDocument::fromJson(line);
-        if (!document.isObject()) {
+
+        QJsonParseError parseError;
+        const QJsonDocument document =
+            QJsonDocument::fromJson(line, &parseError);
+        if (parseError.error != QJsonParseError::NoError ||
+            !document.isObject()) {
             continue;
         }
-        const QJsonObject object = document.object();
-        if (object.value(QStringLiteral("error")).toString() !=
-            QStringLiteral("success")) {
-            continue;
-        }
+        const QJsonObject response = document.object();
         const int requestId =
-            object.value(QStringLiteral("request_id")).toInt();
-        const QJsonValue data = object.value(QStringLiteral("data"));
-        if (!data.isDouble()) {
-            continue;
-        }
-        if (requestId == 3202) {
-            m_cacheEndTime = data.toDouble();
-        } else if (requestId == 3201) {
-            evaluatePlaybackClock(data.toDouble());
+            response.value(QStringLiteral("request_id")).toInt();
+        const QJsonValue data = response.value(QStringLiteral("data"));
+        if (requestId == 100 && data.isDouble()) {
+            evaluateLiveEdgeSample(data.toDouble());
+        } else if (requestId == 101 && data.isBool()) {
+            m_coreIdle = data.toBool();
+        } else if (requestId == 102 && data.isBool()) {
+            m_pausedForCache = data.toBool();
+        } else if (requestId == 103 && data.isDouble()) {
+            m_frameDropCount =
+                static_cast<qint64>(data.toDouble());
+        } else if (requestId == 104 && data.isDouble()) {
+            m_decoderFrameDropCount =
+                static_cast<qint64>(data.toDouble());
+        } else if (requestId == 200 &&
+                   response.value(QStringLiteral("error")).toString()
+                       != QStringLiteral("success")) {
+            appendPlayerLog(
+                QStringLiteral("[cedarview] drop-buffers failed: %1\n")
+                    .arg(response.value(QStringLiteral("error")).toString())
+                    .toUtf8());
         }
     }
 }
 
-void VideoTile::evaluatePlaybackClock(double mediaTime)
+void VideoTile::pollLiveEdge()
 {
-    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-    if (m_lastMediaTime < 0.0 || m_lastClockSampleMs <= 0 ||
-        mediaTime < m_lastMediaTime) {
-        m_lastMediaTime = mediaTime;
-        m_lastClockSampleMs = nowMs;
-        m_syncDebtSeconds = 0.0;
-        m_syncViolationCount = 0;
+    if (!m_liveEdgeCorrectionEnabled || !m_ipcSocket ||
+        m_ipcSocket->state() != QLocalSocket::ConnectedState ||
+        !m_player || m_player->state() != QProcess::Running ||
+        m_paused || m_stopping) {
+        return;
+    }
+    const qint64 nowMs = m_monotonicClock.elapsed();
+    if (m_waitingAfterFlush && m_flushWasAutomatic &&
+        !m_progressSeenAfterFlush &&
+        nowMs - m_flushStartedMs >= LiveEdgeFlushRecoveryMs) {
+        appendPlayerLog(
+            QStringLiteral(
+                "[cedarview] no media-time response %1 ms after "
+                "live-edge flush; reopening this feed\n")
+                .arg(LiveEdgeFlushRecoveryMs)
+                .toUtf8());
+        m_waitingAfterFlush = false;
+        m_flushWasAutomatic = false;
+        m_autoCooldownUntilMs = nowMs + LiveEdgeCooldownMs;
+        setStatus(tr("Feed stalled; reopening…"), true);
+        QTimer::singleShot(0, this, [this] {
+            if (hasCamera() && !m_paused && !m_stopping) {
+                startPlayback();
+            }
+        });
+        return;
+    }
+    sendMpvCommand(
+        QJsonArray{QStringLiteral("get_property"),
+                   QStringLiteral("time-pos")},
+        100);
+    sendMpvCommand(
+        QJsonArray{QStringLiteral("get_property"),
+                   QStringLiteral("core-idle")},
+        101);
+    sendMpvCommand(
+        QJsonArray{QStringLiteral("get_property"),
+                   QStringLiteral("paused-for-cache")},
+        102);
+    sendMpvCommand(
+        QJsonArray{QStringLiteral("get_property"),
+                   QStringLiteral("frame-drop-count")},
+        103);
+    sendMpvCommand(
+        QJsonArray{QStringLiteral("get_property"),
+                   QStringLiteral("decoder-frame-drop-count")},
+        104);
+}
+
+void VideoTile::evaluateLiveEdgeSample(double timePosition)
+{
+    if (!qIsFinite(timePosition) || !m_liveEdgeCorrectionEnabled) {
+        return;
+    }
+    const qint64 nowMs = m_monotonicClock.elapsed();
+    if (m_lastSampleMs < 0 || m_lastTimePosition < 0.0) {
+        m_lastSampleMs = nowMs;
+        m_lastProgressMs = nowMs;
+        m_lastTimePosition = timePosition;
+        m_monitorReadyAtMs = nowMs + LiveEdgeWarmupMs;
         return;
     }
 
-    const double wallElapsed =
-        static_cast<double>(nowMs - m_lastClockSampleMs) / 1000.0;
-    const double mediaElapsed = mediaTime - m_lastMediaTime;
-    if (wallElapsed <= 0.0 || wallElapsed > 10.0) {
-        m_lastMediaTime = mediaTime;
-        m_lastClockSampleMs = nowMs;
-        return;
+    const double elapsedSeconds =
+        qMax<qint64>(1, nowMs - m_lastSampleMs) / 1000.0;
+    const double mediaDelta = timePosition - m_lastTimePosition;
+    const bool discontinuity =
+        mediaDelta < -1.0 || mediaDelta > elapsedSeconds + 5.0;
+    const bool advanced =
+        mediaDelta > 0.04 || discontinuity;
+
+    if (advanced) {
+        m_lastProgressMs = nowMs;
+        if (m_waitingAfterFlush &&
+            nowMs > m_flushStartedMs) {
+            m_progressSeenAfterFlush = true;
+        }
     }
 
-    // A live stream should advance by the same amount as Linux time. Debt
-    // accumulates while playback stalls and falls again if the player catches
-    // up. The cache-to-playhead gap detects a player that is decoding normally
-    // but has drifted behind the RTSP live edge.
-    m_syncDebtSeconds = qMax(
-        0.0, m_syncDebtSeconds + wallElapsed - mediaElapsed);
-    const double liveEdgeLag =
-        m_cacheEndTime >= mediaTime
-            ? m_cacheEndTime - mediaTime
-            : 0.0;
-    const double measuredLag = qMax(m_syncDebtSeconds, liveEdgeLag);
-    const double thresholdSeconds =
-        static_cast<double>(m_playbackSyncThresholdMs) / 1000.0;
-
-    if (measuredLag > thresholdSeconds) {
-        ++m_syncViolationCount;
+    if (discontinuity) {
+        m_accumulatedDelaySeconds = 0.0;
+        m_delayBadSamples = 0;
     } else {
-        m_syncViolationCount = 0;
+        const double shortfall = elapsedSeconds - qMax(0.0, mediaDelta);
+        m_accumulatedDelaySeconds = qBound(
+            0.0,
+            m_accumulatedDelaySeconds + shortfall,
+            10.0);
     }
 
-    m_lastMediaTime = mediaTime;
-    m_lastClockSampleMs = nowMs;
-    if (m_syncViolationCount < 2) {
+    m_lastSampleMs = nowMs;
+    m_lastTimePosition = timePosition;
+
+    if (m_waitingAfterFlush) {
+        if (m_progressSeenAfterFlush &&
+            nowMs - m_flushStartedMs >= 2000) {
+            m_waitingAfterFlush = false;
+            m_flushWasAutomatic = false;
+            m_accumulatedDelaySeconds = 0.0;
+            m_delayBadSamples = 0;
+            markLive();
+            return;
+        }
+        if (m_flushWasAutomatic && !m_progressSeenAfterFlush &&
+            nowMs - m_flushStartedMs >= LiveEdgeFlushRecoveryMs) {
+            appendPlayerLog(
+                QStringLiteral(
+                    "[cedarview] no frame progress %1 ms after live-edge "
+                    "flush; reopening this feed\n")
+                    .arg(LiveEdgeFlushRecoveryMs)
+                    .toUtf8());
+            m_waitingAfterFlush = false;
+            m_flushWasAutomatic = false;
+            m_autoCooldownUntilMs =
+                nowMs + LiveEdgeCooldownMs;
+            setStatus(tr("Feed stalled; reopening…"), true);
+            QTimer::singleShot(0, this, [this] {
+                if (hasCamera() && !m_paused && !m_stopping) {
+                    startPlayback();
+                }
+            });
+            return;
+        }
         return;
     }
 
-    const QString cameraName = m_camera.name;
-    setStatus(tr("Resyncing • %1 s behind")
-                  .arg(measuredLag, 0, 'f', 1));
-    emit playbackResynced(m_index, cameraName, measuredLag);
-    reconnectNow();
+    if (nowMs < m_monitorReadyAtMs) {
+        m_accumulatedDelaySeconds = 0.0;
+        m_delayBadSamples = 0;
+        return;
+    }
+
+    const bool beyondDelayThreshold =
+        m_accumulatedDelaySeconds * 1000.0 >=
+        m_liveEdgeDelayThresholdMs;
+    if (beyondDelayThreshold) {
+        ++m_delayBadSamples;
+    } else {
+        m_delayBadSamples = 0;
+    }
+
+    const bool stalled =
+        m_lastProgressMs >= 0 &&
+        nowMs - m_lastProgressMs >= LiveEdgeStallMs;
+    if (nowMs >= m_autoCooldownUntilMs &&
+        (stalled ||
+         m_delayBadSamples >= LiveEdgeBadSamplesRequired)) {
+        appendPlayerLog(
+            QStringLiteral(
+                "[cedarview] live-edge correction: delay=%1 ms, "
+                "stalled=%2, core-idle=%3, paused-for-cache=%4, "
+                "vo-drops=%5, decoder-drops=%6\n")
+                .arg(qRound(m_accumulatedDelaySeconds * 1000.0))
+                .arg(stalled ? 1 : 0)
+                .arg(m_coreIdle ? 1 : 0)
+                .arg(m_pausedForCache ? 1 : 0)
+                .arg(m_frameDropCount)
+                .arg(m_decoderFrameDropCount)
+                .toUtf8());
+        flushToLiveEdge(true);
+    }
 }
 
-void VideoTile::resetPlaybackClock()
+void VideoTile::flushToLiveEdge(bool automatic)
 {
-    if (m_syncTimer) {
-        m_syncTimer->stop();
+    if (!hasCamera() || m_playbackBackend != QStringLiteral("mpv") ||
+        !m_ipcSocket ||
+        m_ipcSocket->state() != QLocalSocket::ConnectedState) {
+        return;
+    }
+
+    const qint64 nowMs = m_monotonicClock.elapsed();
+    sendMpvCommand(
+        QJsonArray{QStringLiteral("drop-buffers")}, 200);
+    appendPlayerLog(
+        QStringLiteral("[cedarview] %1 GO LIVE: drop-buffers sent\n")
+            .arg(automatic
+                     ? QStringLiteral("automatic")
+                     : QStringLiteral("manual"))
+            .toUtf8());
+
+    m_accumulatedDelaySeconds = 0.0;
+    m_delayBadSamples = 0;
+    m_lastSampleMs = -1;
+    m_lastTimePosition = -1.0;
+    m_lastProgressMs = nowMs;
+    if (automatic) {
+        m_waitingAfterFlush = true;
+        m_flushWasAutomatic = true;
+        m_progressSeenAfterFlush = false;
+        m_flushStartedMs = nowMs;
+        m_autoCooldownUntilMs = nowMs + LiveEdgeCooldownMs;
+    }
+
+    setStatus(automatic ? tr("Catching up to live…")
+                        : tr("Going live…"));
+    QProcess *const player = m_player;
+    QTimer::singleShot(1600, this, [this, player] {
+        if (m_player == player && player &&
+            player->state() == QProcess::Running &&
+            !m_waitingAfterFlush) {
+            markLive();
+        }
+    });
+}
+
+void VideoTile::resetLiveEdgeTracking(bool resetCooldown)
+{
+    m_coreIdle = false;
+    m_pausedForCache = false;
+    m_waitingAfterFlush = false;
+    m_flushWasAutomatic = false;
+    m_progressSeenAfterFlush = false;
+    m_delayBadSamples = 0;
+    m_lastTimePosition = -1.0;
+    m_accumulatedDelaySeconds = 0.0;
+    m_lastSampleMs = -1;
+    m_lastProgressMs = -1;
+    m_frameDropCount = 0;
+    m_decoderFrameDropCount = 0;
+    m_monitorReadyAtMs =
+        m_monotonicClock.isValid()
+            ? m_monotonicClock.elapsed() + LiveEdgeWarmupMs
+            : LiveEdgeWarmupMs;
+    m_flushStartedMs = -1;
+    if (resetCooldown) {
+        m_autoCooldownUntilMs = 0;
+    }
+}
+
+void VideoTile::releaseMpvIpc()
+{
+    if (m_liveEdgeTimer) {
+        m_liveEdgeTimer->stop();
     }
     if (m_ipcSocket) {
         QLocalSocket *socket = m_ipcSocket;
@@ -713,15 +961,92 @@ void VideoTile::resetPlaybackClock()
         socket->deleteLater();
     }
     m_ipcBuffer.clear();
-    m_lastMediaTime = -1.0;
-    m_cacheEndTime = -1.0;
-    m_lastClockSampleMs = 0;
-    m_syncDebtSeconds = 0.0;
-    m_syncViolationCount = 0;
-    if (!m_ipcPath.isEmpty()) {
-        QFile::remove(m_ipcPath);
-        m_ipcPath.clear();
+    if (!m_ipcSocketPath.isEmpty()) {
+        QFile::remove(m_ipcSocketPath);
+        m_ipcSocketPath.clear();
     }
+    resetLiveEdgeTracking(false);
+}
+
+void VideoTile::sendMpvCommand(const QJsonArray &command, int requestId)
+{
+    if (!m_ipcSocket ||
+        m_ipcSocket->state() != QLocalSocket::ConnectedState) {
+        return;
+    }
+    QJsonObject request{
+        {QStringLiteral("command"), command},
+    };
+    if (requestId > 0) {
+        request.insert(QStringLiteral("request_id"), requestId);
+    }
+    QByteArray payload =
+        QJsonDocument(request).toJson(QJsonDocument::Compact);
+    payload.append('\n');
+    m_ipcSocket->write(payload);
+}
+
+void VideoTile::preparePlayerLog(const QStringList &arguments)
+{
+    QString stateRoot = qEnvironmentVariable("XDG_STATE_HOME");
+    if (stateRoot.isEmpty()) {
+        stateRoot = QDir::home().filePath(QStringLiteral(".local/state"));
+    }
+
+    QDir directory(stateRoot);
+    if (!directory.mkpath(QStringLiteral("cedarview/mpv"))) {
+        m_playerLogPath.clear();
+        return;
+    }
+    directory.cd(QStringLiteral("cedarview"));
+    directory.cd(QStringLiteral("mpv"));
+
+    QString host = m_camera.host.trimmed();
+    if (host.isEmpty()) {
+        host = QStringLiteral("tile-%1").arg(m_index + 1);
+    }
+    host.replace(QLatin1Char('/'), QLatin1Char('_'));
+    host.replace(QLatin1Char('\\'), QLatin1Char('_'));
+    host.replace(QLatin1Char(':'), QLatin1Char('_'));
+    m_playerLogPath =
+        directory.filePath(QStringLiteral("camera-%1.log").arg(host));
+
+    QFile current(m_playerLogPath);
+    if (current.exists() && current.size() > MaximumPlayerLogBytes) {
+        const QString previous = m_playerLogPath + QStringLiteral(".previous");
+        QFile::remove(previous);
+        current.rename(previous);
+    }
+
+    QStringList safeArguments = arguments;
+    if (!safeArguments.isEmpty()) {
+        safeArguments.removeLast();
+    }
+    const QString header =
+        QStringLiteral(
+            "\n\n=== %1 | %2 | %3 | %4 | attempt %5 ===\n"
+            "mpv %6 [RTSP URL]\n")
+            .arg(QDateTime::currentDateTime().toString(Qt::ISODate),
+                 m_camera.name,
+                 m_camera.host,
+                 m_camera.subtype == 0
+                     ? QStringLiteral("main")
+                     : QStringLiteral("sub"))
+            .arg(m_retryAttempt + 1)
+            .arg(safeArguments.join(QLatin1Char(' ')));
+    appendPlayerLog(header.toUtf8());
+}
+
+void VideoTile::appendPlayerLog(const QByteArray &data) const
+{
+    if (m_playerLogPath.isEmpty() || data.isEmpty()) {
+        return;
+    }
+    QFile log(m_playerLogPath);
+    if (!log.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        return;
+    }
+    log.write(data);
 }
 
 void VideoTile::pause()
@@ -732,6 +1057,7 @@ void VideoTile::pause()
     m_paused = true;
     m_stopping = true;
     m_reconnectTimer->stop();
+    resetLiveEdgeTracking(false);
     releaseGStreamer();
     releasePlayer();
     m_stopping = false;
@@ -758,6 +1084,7 @@ void VideoTile::reconnectNow()
     }
     m_paused = false;
     m_retryAttempt = 0;
+    m_autoCooldownUntilMs = 0;
     m_reconnectTimer->stop();
     updateOverlay();
     startPlayback();
@@ -775,6 +1102,7 @@ void VideoTile::setStreamSubtype(int subtype)
     }
     m_camera.subtype = subtype;
     m_retryAttempt = 0;
+    m_autoCooldownUntilMs = 0;
     updateOverlay();
     emit streamSubtypeChanged(m_camera.id, subtype);
     if (!m_paused) {
@@ -787,13 +1115,13 @@ void VideoTile::stop()
     m_stopping = true;
     m_reconnectTimer->stop();
     m_controlsTimer->stop();
-    resetPlaybackClock();
     releaseGStreamer();
     releasePlayer();
     m_camera = Camera{};
     m_paused = false;
     m_live = false;
     m_retryAttempt = 0;
+    resetLiveEdgeTracking(true);
     setStatus(tr("Drop a camera here"));
     updateOverlay();
     hideControls();
@@ -829,29 +1157,7 @@ void VideoTile::scheduleReconnect(const QString &detail)
 void VideoTile::markLive()
 {
     m_live = true;
-    m_retryAttempt = 0;
     setStatus(tr("Live"));
-    updateOverlay();
-}
-
-void VideoTile::setPlaybackSync(bool enabled, int thresholdMs)
-{
-    const bool changed = enabled != m_playbackSyncEnabled;
-    m_playbackSyncEnabled = enabled;
-    m_playbackSyncThresholdMs = qBound(1000, thresholdMs, 15000);
-    if (!m_playbackSyncEnabled) {
-        resetPlaybackClock();
-    } else if (changed && hasCamera() && !m_paused &&
-               m_playbackBackend == QStringLiteral("mpv")) {
-        // mpv creates its IPC socket only at launch.
-        reconnectNow();
-    }
-}
-
-void VideoTile::setCameraClockOffset(qint64 offsetMs)
-{
-    m_cameraClockOffsetMs = offsetMs;
-    m_cameraClockKnown = true;
     updateOverlay();
 }
 
@@ -868,6 +1174,32 @@ void VideoTile::setPlaybackBackend(const QString &backend)
         m_retryAttempt = 0;
         startPlayback();
     }
+}
+
+void VideoTile::setLiveEdgeSettings(bool enabled, int delayThresholdMs,
+                                    bool ultraLiveMode)
+{
+    const bool timingModeChanged =
+        m_ultraLiveMode != ultraLiveMode;
+    m_liveEdgeCorrectionEnabled = enabled;
+    m_liveEdgeDelayThresholdMs =
+        qBound(750, delayThresholdMs, 5000);
+    m_ultraLiveMode = ultraLiveMode;
+    resetLiveEdgeTracking(false);
+    if (timingModeChanged && hasCamera() && !m_paused &&
+        m_playbackBackend == QStringLiteral("mpv")) {
+        startPlayback();
+        return;
+    }
+    if (m_ipcSocket &&
+        m_ipcSocket->state() == QLocalSocket::ConnectedState &&
+        m_liveEdgeCorrectionEnabled) {
+        m_liveEdgeTimer->start();
+        pollLiveEdge();
+    } else if (m_liveEdgeTimer) {
+        m_liveEdgeTimer->stop();
+    }
+    updateOverlay();
 }
 
 void VideoTile::setSelected(bool selected)
@@ -904,6 +1236,12 @@ void VideoTile::contextMenuEvent(QContextMenuEvent *event)
     subAction->setChecked(hasCamera() && m_camera.subtype == 1);
     mainAction->setEnabled(hasCamera());
     subAction->setEnabled(hasCamera());
+    QAction *liveAction = menu.addAction(tr("GO LIVE"));
+    liveAction->setEnabled(
+        hasCamera() &&
+        m_playbackBackend == QStringLiteral("mpv") &&
+        m_ipcSocket &&
+        m_ipcSocket->state() == QLocalSocket::ConnectedState);
     QAction *retryAction = menu.addAction(tr("Reconnect now"));
     retryAction->setEnabled(hasCamera());
     menu.addSeparator();
@@ -920,6 +1258,8 @@ void VideoTile::contextMenuEvent(QContextMenuEvent *event)
         setStreamSubtype(0);
     } else if (selectedAction == subAction) {
         setStreamSubtype(1);
+    } else if (selectedAction == liveAction) {
+        flushToLiveEdge(false);
     } else if (selectedAction == retryAction) {
         reconnectNow();
     } else if (selectedAction == clearAction) {
@@ -1046,24 +1386,19 @@ void VideoTile::updateOverlay()
         occupied && m_camera.subtype == 0 ? tr("MAIN") : tr("SUB"));
     m_streamButton->setEnabled(occupied);
     m_pauseButton->setEnabled(occupied);
+    m_liveButton->setEnabled(
+        occupied &&
+        m_playbackBackend == QStringLiteral("mpv") &&
+        m_ipcSocket &&
+        m_ipcSocket->state() == QLocalSocket::ConnectedState);
     m_retryButton->setEnabled(occupied);
     m_closeButton->setEnabled(occupied);
     if (m_paused) {
         m_connectionLabel->setText(tr("Paused"));
     } else if (m_live) {
-        QString text = tr("Live • %1").arg(
-            m_camera.subtype == 0 ? tr("Main") : tr("Sub"));
-        if (m_cameraClockKnown &&
-            qAbs(m_cameraClockOffsetMs) >= 1000) {
-            const double seconds =
-                static_cast<double>(m_cameraClockOffsetMs) / 1000.0;
-            text += tr(" • Clock %1%2 s")
-                        .arg(seconds >= 0.0
-                                 ? QStringLiteral("+")
-                                 : QString())
-                        .arg(seconds, 0, 'f', 1);
-        }
-        m_connectionLabel->setText(text);
+        m_connectionLabel->setText(
+            tr("Live • %1").arg(
+                m_camera.subtype == 0 ? tr("Main") : tr("Sub")));
     } else if (occupied && !m_reconnectTimer->isActive()) {
         m_connectionLabel->setText(
             tr("Connecting • %1").arg(
@@ -1104,6 +1439,7 @@ void VideoTile::setControlsVisible(bool visible)
              static_cast<QWidget *>(m_connectionLabel),
              static_cast<QWidget *>(m_pauseButton),
              static_cast<QWidget *>(m_streamButton),
+             static_cast<QWidget *>(m_liveButton),
              static_cast<QWidget *>(m_retryButton),
              static_cast<QWidget *>(m_closeButton)}) {
         if (widget) {
@@ -1128,6 +1464,7 @@ void VideoTile::positionOverlayWidgets()
              static_cast<QWidget *>(m_connectionLabel),
              static_cast<QWidget *>(m_pauseButton),
              static_cast<QWidget *>(m_streamButton),
+             static_cast<QWidget *>(m_liveButton),
              static_cast<QWidget *>(m_retryButton),
              static_cast<QWidget *>(m_closeButton),
              static_cast<QWidget *>(m_statusLabel)}) {
@@ -1156,6 +1493,7 @@ void VideoTile::positionOverlayWidgets()
     for (QWidget *widget : {
              static_cast<QWidget *>(m_retryButton),
              static_cast<QWidget *>(m_streamButton),
+             static_cast<QWidget *>(m_liveButton),
              static_cast<QWidget *>(m_pauseButton)}) {
         if (!widget) {
             continue;
@@ -1179,7 +1517,7 @@ void VideoTile::positionOverlayWidgets()
 
 void VideoTile::releasePlayer(bool immediate)
 {
-    resetPlaybackClock();
+    releaseMpvIpc();
     if (!m_player) {
         return;
     }
