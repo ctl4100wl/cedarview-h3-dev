@@ -273,12 +273,6 @@ void VideoTile::playMpv()
             tr("%1 • %2")
                 .arg(m_camera.transport.toUpper(),
                      m_camera.subtype == 0 ? tr("Main") : tr("Sub")));
-        QTimer::singleShot(1800, this, [this, player] {
-            if (m_player == player &&
-                player->state() == QProcess::Running) {
-                markLive();
-            }
-        });
         QTimer::singleShot(StablePlaybackMs, this, [this, player] {
             if (m_player == player &&
                 player->state() == QProcess::Running) {
@@ -525,7 +519,15 @@ QStringList VideoTile::playerArguments() const
 {
     QStringList arguments{
         QStringLiteral("--no-config"),
-        QStringLiteral("--no-terminal"),
+        // Keep diagnostic output connected to QProcess. --no-terminal
+        // silences stdout/stderr completely, which previously left only a
+        // generic exit code in the per-camera log.
+        QStringLiteral("--terminal=yes"),
+        QStringLiteral("--input-terminal=no"),
+        QStringLiteral("--quiet"),
+        QStringLiteral("--msg-color=no"),
+        QStringLiteral("--msg-module"),
+        QStringLiteral("--msg-time"),
         QStringLiteral("--no-audio"),
         QStringLiteral("--no-osc"),
         QStringLiteral("--osd-level=0"),
@@ -690,6 +692,31 @@ void VideoTile::readMpvIpc()
             continue;
         }
         const QJsonObject response = document.object();
+        const QString event =
+            response.value(QStringLiteral("event")).toString();
+        if (event == QStringLiteral("file-loaded")) {
+            appendPlayerLog(
+                QByteArrayLiteral("[cedarview] MPV file-loaded\n"));
+            markLive();
+        } else if (event == QStringLiteral("end-file")) {
+            const QString reason =
+                response.value(QStringLiteral("reason")).toString(
+                    QStringLiteral("unknown"));
+            QString fileError =
+                response.value(QStringLiteral("file_error")).toString();
+            if (fileError.isEmpty()) {
+                fileError =
+                    response.value(QStringLiteral("error")).toString();
+            }
+            appendPlayerLog(
+                QStringLiteral(
+                    "[cedarview] MPV end-file reason=%1 error=%2\n")
+                    .arg(reason,
+                         fileError.isEmpty()
+                             ? QStringLiteral("none")
+                             : fileError)
+                    .toUtf8());
+        }
         const int requestId =
             response.value(QStringLiteral("request_id")).toInt();
         const QJsonValue data = response.value(QStringLiteral("data"));
