@@ -2,6 +2,14 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if grep -qi wsl2 /proc/sys/kernel/osrelease; then
+  echo "ERROR: Do not install the ARM binary into WSL2." >&2
+  echo "Build with:  ./scripts/build-wsl-armhf.sh" >&2
+  echo "Deploy with: ./scripts/deploy-wsl-armhf.sh" >&2
+  exit 1
+fi
+
 "${project_dir}/scripts/build.sh"
 
 install_prefix="${HOME}/.local"

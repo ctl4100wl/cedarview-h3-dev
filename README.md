@@ -100,7 +100,49 @@ latency further. Enabling or disabling it restarts active MPV tiles because it
 is a player startup option. Leave it off if a camera has irregular timestamps
 or the picture becomes choppy.
 
-## Build on Armbian
+## Cross-compile on WSL2 for the X6 Pro
+
+The supported fast build path runs on Debian amd64 under WSL2 and produces a
+32-bit ARM hard-float executable for the Allwinner H3. It does not compile on
+the X6 Pro and it does not run the ARM compiler under emulation.
+
+One-time setup inside WSL2:
+
+```bash
+chmod +x scripts/*.sh
+./scripts/setup-wsl-armhf.sh
+```
+
+Build and verify locally on WSL2:
+
+```bash
+./scripts/build-wsl-armhf.sh
+file dist/cedarview-armhf
+```
+
+The build script succeeds only if both `file` and ARM `readelf` identify the
+output as a 32-bit ARM executable. A second unchanged-build test is available:
+
+```bash
+./scripts/check-wsl-armhf.sh
+```
+
+With an SSH alias named `x6pro`, build and deploy the checked executable:
+
+```bash
+./scripts/deploy-wsl-armhf.sh
+```
+
+To use an address instead of the alias:
+
+```bash
+./scripts/deploy-wsl-armhf.sh ctl4100wl@192.168.1.19
+```
+
+The deploy script refuses non-ARM output and refuses a non-ARM destination.
+It installs the binary at `~/.local/bin/cedarview` on the X6 Pro.
+
+## Native build on Armbian
 
 ```bash
 chmod +x scripts/*.sh
